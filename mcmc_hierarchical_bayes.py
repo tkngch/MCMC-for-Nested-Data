@@ -16,6 +16,7 @@ import glob
 import shutil
 import os.path
 import datetime
+from multiprocessing import Process
 import numpy
 import scipy.stats
 import scipy.optimize
@@ -386,6 +387,7 @@ class HierarchicalBayes(object):
                  parameter_name, parameter_family, parameter_value_range,
                  n_groups, n_responses_per_group,
                  loglikelihood_function,
+                 loglikelihood_timeout=60,
                  start_with_mle=False, verbose=False):
         """
         This class defines the step method and finds a starting state for MCMC.
@@ -439,6 +441,13 @@ class HierarchicalBayes(object):
                      ll for the third group's first response,
                      ...]
 
+            - loglikelihood_timeout (optional) : int, default = 60
+
+                How many seconds to wait for likelihood computation. By
+                default, if the loglikelihood_function does not return a value
+                in 60 seconds, the likelihood is treated as 0. This may help
+                speeding up MCMC sampling.
+
             - start_with_mle (optional) : bool, default = False
                 Whether to start MCMC with MLE.
 
@@ -456,6 +465,7 @@ class HierarchicalBayes(object):
         self._n_response_per_group = n_responses_per_group
 
         self._loglikelihood_function = loglikelihood_function
+        self._loglikelihood_timeout = loglikelihood_timeout
 
         self._ll_index = [i * n_responses_per_group
                           for i in range(n_groups)]
@@ -601,8 +611,7 @@ class HierarchicalBayes(object):
             for i in range(self._n_groups):
                 self._parameter[name][i].set_prior(prior)
 
-    def _compute_parameter_loglikelihood(self, proposed_parameter=None,
-                                         timeout_duration=60):
+    def _compute_parameter_loglikelihood(self, proposed_parameter=None):
 
         x = [[0] * self._n_groups] * len(self._parameter_name)
         for i, name in enumerate(self._parameter_name):
@@ -613,7 +622,7 @@ class HierarchicalBayes(object):
 
         # set the timeout handler
         signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout_duration)
+        signal.alarm(self._loglikelihood_timeout)
 
         try:
             ll = self._loglikelihood_function(x)
@@ -710,7 +719,8 @@ class MCMC(object):
 
         self._outputfile = {"sample": sample_file, "loglikelihood": ll_file}
 
-        print("Chain %i initiated" % self._chain)
+        if self._verbose:
+            print("Chain %i initiated" % self._chain)
 
     def sample(self, iter, burn=0, thin=1, tune_interval=100):
         """
@@ -729,7 +739,8 @@ class MCMC(object):
                 Variables will be tallied at intervals of this many iterations.
 
           - tune_interval (optional) : int, default = 100
-                Step methods will be tuned at intervals of this many iterations.
+                Step methods will be tuned at intervals of this many
+                iterations.
 
         """
 
@@ -1028,7 +1039,8 @@ class Diagnostic(object):
                 None, the summary is printed on stdout.
 
             - hyperonly (optional) : bool, default = False
-                When True, the summary for only the hyper-parameters is printed.
+                When True, the summary for only the hyper-parameters is
+                printed.
 
         """
         self._summarise()
@@ -1294,8 +1306,10 @@ class Figure(object):
 def run_mcmc(parameter_name, parameter_family, parameter_value_range,
              n_groups, n_responses_per_group,
              loglikelihood_function,
-             n_chains, n_iter, n_samples,
-             outputdir, start_with_mle=True):
+             n_chains, n_iter, n_samples, outputdir,
+             loglikelihood_timeout=60,
+             start_with_mle=True,
+             n_processes=0):
     """
     This function uses the classes defined above and runs MCMC.
 
@@ -1334,9 +1348,20 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
             figures (traceplots and bivariate). Before running MCMC, everything
             under this path will be removed.
 
-        - start_with_mle (optional) : bool
+        - loglikelihood_timeout (optional) : int, default = 60
+            How many seconds to wait for likelihood computation. By default, if
+            the loglikelihood_function does not return a value in 60 seconds,
+            the likelihood is treated as 0. This may help speeding up MCMC
+            sampling.
+
+        - start_with_mle (optional) : bool, default = True
             Whether to start a chain with maximum likelihood estimation.
             This estimation pools groups and uses Nelder-Mead method.
+
+        - n_processes (optional) : int, default = 0
+            How many processes to launch. If zero (default), multiprocessing is
+            not triggered.
+
     """
 
     assert(n_iter >= n_samples)
@@ -1359,18 +1384,20 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
     thin = int(numpy.ceil((n_iter - burn) / n_samples))
     tune_interval = 100
 
-    for chain in range(n_chains):
-        method = HierarchicalBayes(parameter_name,
-                                   parameter_family,
-                                   parameter_value_range,
-                                   n_groups,
-                                   n_responses_per_group,
-                                   loglikelihood_function,
-                                   start_with_mle=start_with_mle,
-                                   verbose=True)
+    if n_processes <= 0:
+        for chain in range(n_chains):
+            _sample(
+                parameter_name, parameter_family, parameter_value_range,
+                n_groups, n_responses_per_group, loglikelihood_function,
+                chain, n_iter, n_samples, burn, thin, tune_interval,
+                sampledir, loglikelihood_timeout, start_with_mle)
 
-        mcmc = MCMC(method, chain, sampledir=sampledir, display_progress=True)
-        mcmc.sample(n_iter, burn, thin, tune_interval)
+    elif n_processes > 0:
+        _parallel_sample(
+            parameter_name, parameter_family, parameter_value_range,
+            n_groups, n_responses_per_group, loglikelihood_function,
+            n_chains, n_iter, n_samples, burn, thin, tune_interval,
+            sampledir, loglikelihood_timeout, start_with_mle, n_processes)
 
     diagnostic = Diagnostic(sampledir)
     diagnostic.print(sampledir + "/summary.csv")
@@ -1379,3 +1406,54 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
     fig = Figure(sampledir)
     fig.traceplots(traceplotdir)
     fig.bivariates(bivariatedir)
+
+
+def _sample(parameter_name, parameter_family, parameter_value_range,
+            n_groups, n_responses_per_group, loglikelihood_function,
+            chain, n_iter, n_samples, burn, thin, tune_interval,
+            sampledir, loglikelihood_timeout, start_with_mle,
+            verbose=True):
+
+    numpy.random.seed(chain)
+
+    method = HierarchicalBayes(parameter_name,
+                               parameter_family,
+                               parameter_value_range,
+                               n_groups,
+                               n_responses_per_group,
+                               loglikelihood_function,
+                               loglikelihood_timeout,
+                               start_with_mle=start_with_mle,
+                               verbose=verbose)
+
+    mcmc = MCMC(method, chain, sampledir=sampledir, display_progress=verbose)
+    mcmc.sample(n_iter, burn, thin, tune_interval)
+
+
+def _parallel_sample(parameter_name, parameter_family, parameter_value_range,
+                     n_groups, n_responses_per_group, loglikelihood_function,
+                     n_chains, n_iter, n_samples, burn, thin, tune_interval,
+                     sampledir, loglikelihood_timeout, start_with_mle,
+                     n_processes):
+
+    processes = [Process(target=_sample,
+                         args=(parameter_name, parameter_family,
+                               parameter_value_range,
+                               n_groups, n_responses_per_group,
+                               loglikelihood_function,
+                               chain, n_iter, n_samples,
+                               burn, thin, tune_interval,
+                               sampledir, loglikelihood_timeout,
+                               start_with_mle,
+                               (chain % n_processes) == 0))
+                 for chain in range(n_chains)]
+
+    processings = []
+    for i, process in enumerate(processes):
+        process.start()
+        processings.append(process)
+
+        if len(processings) % n_processes == 0:
+            for processing in processings:
+                processing.join()
+            processings.clear()
