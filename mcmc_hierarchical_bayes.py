@@ -352,6 +352,11 @@ class HyperParameter(object):
         return scipy.stats.invgamma(v / 2., scale=(v / 2.) * s2).rvs()
 
     def _update_rate_param(self, shape, inv_scale):
+        if shape == 0:
+            # this results in domain error on scipy.stats.gamma
+            # add a tiny amount to evade the error
+            shape = 0.01
+
         name = {"exponential": "invrate", "poisson": "rate"}[self._family]
         self._value[name] = scipy.stats\
                                  .gamma(a=shape, scale=1./inv_scale)\
@@ -408,7 +413,7 @@ class HierarchicalBayes(object):
 
             - n_groups : int
 
-            - n_responses_per_group : int
+            - n_responses_per_group : int or list of int
 
             - loglikelihood_function : def
 
@@ -462,13 +467,17 @@ class HierarchicalBayes(object):
         self._parameter_value_range = parameter_value_range
 
         self._n_groups = n_groups
-        self._n_response_per_group = n_responses_per_group
+
+        if type(n_responses_per_group) == int:
+            self._n_responses_per_group = [n_responses_per_group] * n_groups
+        elif type(n_responses_per_group) == list:
+            self._n_responses_per_group = n_responses_per_group
 
         self._loglikelihood_function = loglikelihood_function
         self._loglikelihood_timeout = loglikelihood_timeout
 
-        self._ll_index = [i * n_responses_per_group
-                          for i in range(n_groups)]
+        self._ll_index = numpy.hstack(
+            [0, numpy.cumsum(self._n_responses_per_group)])
 
         self._find_starting_point()
         if start_with_mle:
@@ -628,14 +637,13 @@ class HierarchicalBayes(object):
             ll = self._loglikelihood_function(x)
         except TimeoutError:
             print("Likelihood computation timed out.")
-            ll = numpy.zeros((self._n_groups *
-                              self._n_response_per_group))
+            ll = numpy.zeros(sum(self._n_responses_per_group))
             ll += NEGATIVE_INFINITY
         finally:
             signal.alarm(0)
 
-        return [sum(ll[i:i + self._n_response_per_group])
-                for i in self._ll_index]
+        return [sum(ll[self._ll_index[i]:self._ll_index[i + 1]])
+                for i in range(self._n_groups)]
 
     @property
     def header(self):
@@ -1332,7 +1340,7 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
 
         - n_groups : int
 
-        - n_responses_per_group : int
+        - n_responses_per_group : int or list of int
 
         - loglikelihood_function : def
             see doc string for HierarchicalBayes
