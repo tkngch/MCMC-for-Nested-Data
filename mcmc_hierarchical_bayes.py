@@ -295,6 +295,10 @@ class HyperParameter(object):
                 poisson family, the parameter value can take only non-negative
                 integers.
 
+                In modeling non-positive parameter values, negated family may
+                come useful. Negated exponential, for example, is -1 *
+                exponential distribution, which takes non-positive values.
+
             - start (optional) : dict
                 default values are:
                     {"mean": 0, "var": 1} for gaussian family
