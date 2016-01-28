@@ -5,7 +5,7 @@ import functools
 import numpy
 import scipy.stats
 from mcmc_hierarchical_bayes import run_mcmc
-numpy.random.seed(12345)
+# numpy.random.seed(12345)
 
 
 def generate_data(n_groups, n_responses_per_group):
@@ -73,7 +73,7 @@ def main():
     parameter_name = ("b0", "b1", "sigma")
     parameter_family = {"b0": "gaussian",
                         "b1": "gaussian",
-                        "sigma": "exponential"}
+                        "sigma": "log normal"}
     parameter_value_range = {"b0": [-100, 100],
                              "b1": [-100, 100],
                              "sigma": [0.00, 100.]}

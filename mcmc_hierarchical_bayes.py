@@ -24,10 +24,6 @@ import pandas
 from scipy.stats import kde
 import matplotlib.pyplot as plt
 
-# import warnings
-# warnings.filterwarnings("error")
-# warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 
 # ---------------- #
 # global variables #
@@ -65,8 +61,11 @@ class Parameter(object):
                 This is used as a group index, and the unique name of the
                 parameter is set to "%s[%.3i]" % (parameter_name, index).
 
-            - family : str, "gaussian", "log normal", "exponential", or
-              "poisson".
+            - family : str
+                "gaussian", "log normal", "negated log normal",
+                "exponential", "negated exponential",
+                "poisson", or "negated poisson".
+
                 See docstring for HyperParameter.
 
             - prior : scipy.stats distribution
@@ -95,16 +94,37 @@ class Parameter(object):
         self._prior = prior
 
         if self._value is None:
-            self._value = self._prior.rvs()
+            self._value = self._sample_prior()
 
         self._update_logprior()
         self._update_logp()
 
-    def _update_logprior(self):
-        if self._family == "poisson":
-            self._log_prior = self._prior.logpmf(self._value)
+    def _sample_prior(self):
+        if "log normal" in self._family:
+            value = numpy.exp(self._prior.rvs())
         else:
-            self._log_prior = self._prior.logpdf(self._value)
+            value = self._prior.rvs()
+
+        if "negated" in self._family:
+            value *= -1
+
+        return value
+
+    def _update_logprior(self):
+        self._log_prior = self._get_logprior(self._value)
+
+    def _get_logprior(self, value):
+        if "negated" in self._family:
+            value = -1 * self._value
+
+        if "log normal" in self._family:
+            logprior = self._prior.logpdf(numpy.log(value))
+        elif "poisson" in self._family:
+            logprior = self._prior.logpmf(value)
+        else:
+            logprior = self._prior.logpdf(value)
+
+        return logprior
 
     @property
     def header(self):
@@ -118,12 +138,16 @@ class Parameter(object):
         sd = self._proposal_sd * self._adaptive_scale_factor
         self._proposal = numpy.random.normal(self._value, sd)
 
-        if self._family == "poisson":
+        if "poisson" in self._family:
             self._proposal = int(round(self._proposal))
 
     @property
     def proposal(self):
         return self._proposal
+
+    @property
+    def logprior(self):
+        return self._log_prior
 
     @property
     def logp(self):
@@ -145,12 +169,8 @@ class Parameter(object):
         self._logp = self._log_prior + self._log_likelihood
 
     def step(self, proposal_log_likelihood):
-        if self._family == "poisson":
-            proposal_logp = self._prior.logpmf(self._proposal) + \
-                            proposal_log_likelihood
-        else:
-            proposal_logp = self._prior.logpdf(self._proposal) + \
-                            proposal_log_likelihood
+        proposal_logprior = self._get_logprior(self._proposal)
+        proposal_logp = proposal_logprior + proposal_log_likelihood
 
         if self._verbose > 0:
             print("%s\t" % self._unique_name, end="")
@@ -258,8 +278,10 @@ class HyperParameter(object):
         :Arguments:
             - parameter_name : str
 
-            - family : str, "gaussian", "log normal", "exponential", or
-              "poisson".
+            - family : str
+                "gaussian", "log normal", "negated log normal",
+                "exponential", "negated exponential",
+                "poisson", or "negated poisson".
 
                 This family defines how parameter values are modeled. With the
                 gaussian family, for example, parameter values are assumed to
@@ -276,7 +298,7 @@ class HyperParameter(object):
             - start (optional) : dict
                 default values are:
                     {"mean": 0, "var": 1} for gaussian family
-                    {"mean": 1, "var": 1} for log normal family
+                    {"mean": 0, "var": 1} for log normal family
                     {"invrate": 1} for exponential family
                     {"rate": 1} for poisson family
 
@@ -290,7 +312,7 @@ class HyperParameter(object):
 
             exponential family: rate ~ gamma(0, 0)
 
-            poisson family: rate ~ gamma(0, 0)
+            poisson family: rate ~ gamma(1, 0)
 
         """
 
@@ -299,16 +321,16 @@ class HyperParameter(object):
 
         if start is not None:
             self._value = start
-        elif self._family == "gaussian":
-            self._value = {"mean": 0, "var": 1}
-        elif self._family == "log normal":
-            self._value = {"mean": 1, "var": 1}
-        elif self._family == "exponential":
-            self._value = {"invrate": 1}
-        elif self._family == "poisson":
-            self._value = {"rate": 1}
         else:
-            raise Exception("Invalid parameter family: %s" % self._family)
+            self._value = {
+                "gaussian": {"mean": 0, "var": 1},
+                "log normal": {"mean": 0, "var": 1},
+                "negated log normal": {"mean": 0, "var": 1},
+                "exponential": {"invrate": 1},
+                "negated exponential": {"invrate": -1},
+                "poisson": {"rate": 1},
+                "negated poisson": {"rate": -1}
+            }[self._family]
 
         self._hyper_parameter_name = [name for name in self._value]
         self._verbose = verbose or False
@@ -317,24 +339,40 @@ class HyperParameter(object):
         """
         Gibbs sampling.
         """
+        if type(x) == list:
+            x = numpy.array(x)
+        if type(x) != numpy.ndarray:
+            raise Exception("Wrong type is used for hyperparameter update: %s"
+                            % type(x))
 
         if self._verbose:
             print("current: %s" % self.values.__str__(), end="")
+
+        if "negated" in self._family:
+            x = -1 * x
 
         if self._family == "gaussian":
             self._update_mean(x)
             self._update_var(x)
 
-        elif self._family == "log normal":
+        elif "log normal" in self._family:
             self._update_mean(numpy.log(x))
             self._update_var(numpy.log(x))
             self._value["mean"] = numpy.exp(self._value["mean"])
 
-        elif self._family == "exponential":
-            self._update_rate_param(len(x), sum(x))
+        elif "exponential" in self._family:
+            rate = self._update_rate_param(len(x), sum(x))
+            self._value["invrate"] = 1. / rate
 
-        elif self._family == "poisson":
-            self._update_rate_param(sum(x), len(x))
+        elif "poisson" in self._family:
+            # self._update_rate_param(sum(x), len(x))
+            # let's say prior is gamma(1, 0)
+            self._value["rate"] = self._update_rate_param(1 + sum(x), len(x))
+
+        if "negated" in self._family:
+            for key in ("mean", "invrate", "rate"):
+                if key in self._value:
+                    self._value[key] *= -1
 
         if self._verbose:
             print("\tupdated: %s" % self.values.__str__())
@@ -352,15 +390,7 @@ class HyperParameter(object):
         return scipy.stats.invgamma(v / 2., scale=(v / 2.) * s2).rvs()
 
     def _update_rate_param(self, shape, inv_scale):
-        if shape == 0:
-            # this results in domain error on scipy.stats.gamma
-            # add a tiny amount to evade the error
-            shape = 0.01
-
-        name = {"exponential": "invrate", "poisson": "rate"}[self._family]
-        self._value[name] = scipy.stats\
-                                 .gamma(a=shape, scale=1./inv_scale)\
-                                 .rvs()
+        return scipy.stats.gamma(a=shape, scale=1./inv_scale).rvs()
 
     def get_distribution(self):
         if self._family == "gaussian":
@@ -368,14 +398,24 @@ class HyperParameter(object):
                                     scale=numpy.sqrt(self._value["var"]))
 
         if self._family == "log normal":
-            return scipy.stats.lognorm(s=numpy.sqrt(self._value["var"]),
-                                       loc=numpy.log(self._value["mean"]))
+            return scipy.stats.norm(loc=numpy.log(self._value["mean"]),
+                                    scale=numpy.sqrt(self._value["var"]))
+
+        if self._family == "negated log normal":
+            return scipy.stats.norm(loc=numpy.log(-1 * self._value["mean"]),
+                                    scale=numpy.sqrt(self._value["var"]))
 
         if self._family == "exponential":
             return scipy.stats.expon(scale=self._value["invrate"])
 
+        if self._family == "negated exponential":
+            return scipy.stats.expon(scale=-1 * self._value["invrate"])
+
         if self._family == "poisson":
             return scipy.stats.poisson(mu=self._value["rate"])
+
+        if self._family == "negated poisson":
+            return scipy.stats.poisson(mu=-1 * self._value["rate"])
 
     @property
     def header(self):
@@ -484,7 +524,7 @@ class HierarchicalBayes(object):
             self._optimise_starting_point()
 
         if self._verbose:
-            print("\tStarting Point:")
+            print("Starting Point:")
 
         self._parameter = {}
         for i, name in enumerate(self._parameter_name):
@@ -492,13 +532,12 @@ class HierarchicalBayes(object):
             family = self._parameter_family[name]
             val = self._starting_point[i]
 
-            if family == "gaussian":
-                start = {"mean": val, "var": numpy.sqrt(numpy.abs(val))}
-            elif family == "log normal":
-                start = {"mean": val, "var": numpy.sqrt(numpy.abs(val))}
-            elif family == "exponential":
+            if family in ("gaussian", "log normal", "negated log normal"):
+                start = {"mean": val,
+                         "var": numpy.sqrt(numpy.abs(val) / 10.)}
+            elif family in ("exponential", "negated exponential"):
                 start = {"invrate": val}
-            elif family == "poisson":
+            elif family in ("poisson", "negated poisson"):
                 start = {"rate": val}
             else:
                 raise Exception("Invalid parameter family: %s" % family)
@@ -506,7 +545,7 @@ class HierarchicalBayes(object):
             if self._verbose:
                 start_str = ", ".join(["%s: %.3f" % (key, start[key])
                                        for key in start])
-                print("\t\t %s %s {%s}" % (name, family, start_str))
+                print("\t %s %s {%s}" % (name, family, start_str))
 
             self._parameter[name + "_hyper"] = \
                 HyperParameter(name, family, start)
@@ -521,6 +560,10 @@ class HierarchicalBayes(object):
                 self._parameter[name][i].log_likelihood = ll[i]
 
     def _find_starting_point(self):
+        if self._verbose:
+            print("Looking for a reasonable starting point: %s." %
+                  datetime.datetime.now().strftime(DATETIMEFMT))
+
         ll = numpy.inf
         x = [0] * len(self._parameter_name)
 
@@ -560,12 +603,12 @@ class HierarchicalBayes(object):
 
     def _optimise_starting_point(self):
         if self._verbose:
-            print("Finding a starting point. Started at %s." %
+            print("Optimising a starting point: %s." %
                   datetime.datetime.now().strftime(DATETIMEFMT))
 
-        optimized = False
+        optimised = False
         n = 0
-        while not optimized:
+        while not optimised:
             n += 1
             res = scipy.optimize.minimize(self._mle_objective_function,
                                           self._starting_point,
@@ -576,19 +619,19 @@ class HierarchicalBayes(object):
                                                    "ftol": 0.0001})
 
             if self._verbose:
-                print("%s %.2f." % (res.message, res.fun))
+                print("\t%s %.2f." % (res.message, res.fun))
 
             if res.fun < -0.9 * NEGATIVE_INFINITY:
                 self._starting_point = res.x
 
                 if res.success:
-                    optimized = True
+                    optimised = True
 
             else:
                 self._find_starting_point()
 
             if n > 10:
-                raise Exception("Cannot optimize a starting point. "
+                raise Exception("Cannot optimise a starting point. "
                                 "Revise the value ranges")
 
     def _get_parameter_prior(self, name):
@@ -727,9 +770,6 @@ class MCMC(object):
 
         self._outputfile = {"sample": sample_file, "loglikelihood": ll_file}
 
-        if self._verbose:
-            print("Chain %i initiated" % self._chain)
-
     def sample(self, iter, burn=0, thin=1, tune_interval=100):
         """
         sample(iter, burn, thin, tune_interval, verbose)
@@ -762,6 +802,11 @@ class MCMC(object):
         self._burn = int(burn)
         self._thin = int(thin)
         self._tune_interval = int(tune_interval)
+
+        if self._verbose:
+            print("Chain %i sampling: %s." %
+                  (self._chain,
+                   datetime.datetime.now().strftime(DATETIMEFMT)))
 
         # Run sampler
         self._loop()
@@ -886,7 +931,7 @@ class Diagnostic(object):
         self._m = len(sample_files) * 2
         self._samples = {}
         for i, filename in enumerate(sample_files):
-            d = pandas.read_csv(filename)
+            d = pandas.read_csv(filename, engine="python")
 
             if i == 0:
                 n = d.shape[0]
@@ -1137,7 +1182,7 @@ class Figure(object):
         self._value_range = {}
 
         for i, filename in enumerate(sample_files):
-            d = pandas.read_csv(filename)
+            d = pandas.read_csv(filename, engine="python")
 
             if i == 0:
                 self._n = d.shape[0]
@@ -1373,6 +1418,8 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
     """
 
     assert(n_iter >= n_samples)
+    print("Started at %s." %
+          datetime.datetime.now().strftime(DATETIMEFMT))
 
     if os.path.exists(outputdir):
         shutil.rmtree(outputdir)
@@ -1434,7 +1481,11 @@ def _sample(parameter_name, parameter_family, parameter_value_range,
                                start_with_mle=start_with_mle,
                                verbose=verbose)
 
-    mcmc = MCMC(method, chain, sampledir=sampledir, display_progress=verbose)
+    mcmc = MCMC(method, chain,
+                sampledir=sampledir,
+                display_progress=verbose,
+                verbose=verbose)
+
     mcmc.sample(n_iter, burn, thin, tune_interval)
 
 
