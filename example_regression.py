@@ -4,7 +4,8 @@
 import functools
 import numpy
 import scipy.stats
-from mcmc_hierarchical_bayes import run_mcmc
+from posterior_sampling import sample_posterior
+from diagnosis import diagnose
 # numpy.random.seed(12345)
 
 
@@ -33,6 +34,12 @@ def generate_data(n_groups, n_responses_per_group):
 
     # generate response variable with noise
     y = numpy.sum(x * beta, axis=1) + numpy.random.normal(size=n)
+
+    print("True value:")
+    for i in range(beta.shape[1]):
+        print("\tbeta%i: {mean: %.3f, sd: %.3f}"
+              % (i, numpy.mean(beta[:, i]), numpy.std(beta[:, 1])))
+    print("")
 
     # indicate which row belongs to which group
     group = numpy.repeat(range(n_groups), [n_responses_per_group] * n_groups)
@@ -64,19 +71,23 @@ def compute_loglikelihood(parameter, data):
 def main():
     # mcmc configuration
     n_chains = 4
-    n_iter = 2000
-    n_samples = 100
+    n_iter = 20000
+    n_samples = 1000
 
     outputdir = "./sample/example_regression/"
 
     # paramter specification
     parameter_name = ("b0", "b1", "sigma")
-    parameter_family = {"b0": "gaussian",
-                        "b1": "gaussian",
+    parameter_family = {"b0": "normal",
+                        "b1": "log normal",
                         "sigma": "log normal"}
     parameter_value_range = {"b0": [-100, 100],
-                             "b1": [-100, 100],
+                             "b1": [0, 200],
                              "sigma": [0.00, 100.]}
+
+    prior_for_hyperparameter = \
+        {"b1": {"mu0": numpy.log(400), "kappa0": 100},
+         "sigma": {"mu0": numpy.log(1), "kappa0": 1}}
 
     # generate data and partial apply to the loglikelihood function
     n_groups = 10
@@ -84,12 +95,14 @@ def main():
     data = generate_data(n_groups, n_responses_per_group)
     objective_func = functools.partial(compute_loglikelihood, data=data)
 
-    # run mcmc and make figures
-    run_mcmc(parameter_name, parameter_family, parameter_value_range,
-             n_groups, n_responses_per_group,
-             objective_func,
-             n_chains, n_iter, n_samples, outputdir,
-             start_with_mle=False)
+    # run mcmc
+    sample_posterior(parameter_name, parameter_family, parameter_value_range,
+                     n_groups, n_responses_per_group, objective_func,
+                     n_chains, n_iter, n_samples, outputdir,
+                     prior_for_hyperparameter=prior_for_hyperparameter,
+                     start_with_mle=False, n_processes=0)
+    # make figures
+    diagnose(outputdir)
 
 
 if __name__ == "__main__":

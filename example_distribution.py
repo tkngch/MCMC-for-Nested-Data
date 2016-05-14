@@ -4,7 +4,8 @@
 import functools
 import numpy
 import scipy.stats
-from mcmc_hierarchical_bayes import run_mcmc
+from posterior_sampling import sample_posterior
+from diagnosis import diagnose
 numpy.random.seed(12345)
 
 
@@ -28,7 +29,7 @@ def get_objective_func(parameter_name, parameter_family,
 
     distributions = []
     for i, name in enumerate(parameter_name):
-        scale = numpy.random.random() * 100
+        scale = numpy.random.random() * 1
         if "negated" in parameter_family[name]:
             scale *= -1
 
@@ -52,13 +53,13 @@ def get_objective_func(parameter_name, parameter_family,
 
 def main():
     n_chains = 2
-    n_iter = 2000
-    n_samples = 100
+    n_iter = 10000
+    n_samples = 1000
     outputdir = "./sample/example_distribution/"
 
     # parameter_name = ("a", "b", "c", "d")
-    parameter_name = ("e",)
-    parameter_family = {"a": "gaussian",
+    parameter_name = ("a", "b", "e",)
+    parameter_family = {"a": "normal",
                         "b": "log normal",
                         "c": "exponential",
                         "d": "poisson",
@@ -72,18 +73,18 @@ def main():
     for name in ("e", "f", "g"):
         parameter_value_range[name] = [-100, 0]
 
-    n_groups = 100
+    n_groups = 10
     n_responses_per_group = 10
 
     objective_func = get_objective_func(parameter_name, parameter_family,
                                         n_groups, n_responses_per_group)
 
-    run_mcmc(parameter_name, parameter_family, parameter_value_range,
-             n_groups, n_responses_per_group,
-             objective_func,
-             n_chains, n_iter, n_samples, outputdir,
-             start_with_mle=False,
-             n_processes=0)
+    sample_posterior(parameter_name, parameter_family, parameter_value_range,
+                     n_groups, n_responses_per_group, objective_func,
+                     n_chains, n_iter, n_samples, outputdir,
+                     start_with_mle=False, n_processes=0)
+
+    diagnose(outputdir)
 
 
 if __name__ == "__main__":

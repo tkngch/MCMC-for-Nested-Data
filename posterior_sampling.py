@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Copyright (C) 2015 Takao Noguchi (tkngch@runbox.com)
+# Copyright (C) 2015-2016 Takao Noguchi (tkngch@runbox.com)
 
 """
 
@@ -12,24 +12,21 @@ posterior distribution using MCMC algorithm.
 """
 
 import signal
-import glob
 import shutil
+import sys
 import os.path
 import datetime
+import multiprocessing
 from multiprocessing import Process
 import numpy
 import scipy.stats
 import scipy.optimize
-import pandas
-from scipy.stats import kde
-import matplotlib.pyplot as plt
 
 
 # ---------------- #
 # global variables #
 # ---------------- #
-NEGATIVE_INFINITY = -1e300
-DATETIMEFMT = "%d-%m-%Y %H:%M"
+DATETIMEFMT = "%H:%M:%S on %d/%m/%Y"
 
 
 # ---------------------------- #
@@ -62,7 +59,7 @@ class Parameter(object):
                 parameter is set to "%s[%.3i]" % (parameter_name, index).
 
             - family : str
-                "gaussian", "log normal", "negated log normal",
+                "normal", "log normal", "negated log normal",
                 "exponential", "negated exponential",
                 "poisson", or "negated poisson".
 
@@ -91,16 +88,22 @@ class Parameter(object):
         self._n_rejected = 0.
 
     def set_prior(self, prior):
+        if self._verbose:
+            print("The new prior has mean of %.3f and var of %.3f."
+                  % (prior.mean(), prior.var()))
         self._prior = prior
 
         if self._value is None:
-            self._value = self._sample_prior()
+            self.sample_prior_and_set_value()
 
         self._update_logprior()
         self._update_logp()
 
+    def sample_prior_and_set_value(self):
+        self._value = self._sample_prior()
+
     def _sample_prior(self):
-        if "log normal" in self._family:
+        if "log" in self._family:
             value = numpy.exp(self._prior.rvs())
         else:
             value = self._prior.rvs()
@@ -115,11 +118,11 @@ class Parameter(object):
 
     def _get_logprior(self, value):
         if "negated" in self._family:
-            value = -1 * self._value
+            value = -1 * value
+        if "log" in self._family:
+            value = numpy.log(value)
 
-        if "log normal" in self._family:
-            logprior = self._prior.logpdf(numpy.log(value))
-        elif "poisson" in self._family:
+        if "poisson" in self._family:
             logprior = self._prior.logpmf(value)
         else:
             logprior = self._prior.logpdf(value)
@@ -181,20 +184,29 @@ class Parameter(object):
                   % (self._proposal, proposal_log_likelihood, proposal_logp),
                   end="\t")
 
-        if (not numpy.isfinite(self._logp)) and numpy.isfinite(proposal_logp):
-            self._accept(proposal_log_likelihood)
-            accepted = True
+        diff = proposal_logp - self._logp
 
-        elif numpy.log(numpy.random.random()) < proposal_logp - self._logp:
+        if (
+            (not numpy.isfinite(self._logp)) and
+            numpy.isfinite(proposal_logp)
+        ):
             self._accept(proposal_log_likelihood)
-            accepted = True
+            return True
 
-        else:
+        elif not numpy.isfinite(proposal_log_likelihood):
             self._reject()
-            accepted = False
+            return False
 
-        self._proposal = None
-        return accepted
+        elif not numpy.isfinite(diff):
+            self._reject()
+            return False
+
+        elif numpy.log(numpy.random.random()) < diff:
+            self._accept(proposal_log_likelihood)
+            return True
+
+        self._reject()
+        return False
 
     def _accept(self, proposal_log_likelihood):
         self._value = self._proposal
@@ -206,11 +218,13 @@ class Parameter(object):
         self._n_accepted += 1.
         if self._verbose > 0:
             print("accepted")
+        self._proposal = None
 
     def _reject(self):
         self._n_rejected += 1.
         if self._verbose > 0:
             print("rejected")
+        self._proposal = None
 
     def tune(self):
         """
@@ -269,7 +283,7 @@ class Parameter(object):
 
 class HyperParameter(object):
     def __init__(self, parameter_name, family,
-                 start=None, verbose=False):
+                 start=None, prior=None, verbose=False):
         """
 
         This class defines hyper-parameter. As with Parameter class, users are
@@ -279,17 +293,17 @@ class HyperParameter(object):
             - parameter_name : str
 
             - family : str
-                "gaussian", "log normal", "negated log normal",
+                "normal", "log normal", "negated log normal",
                 "exponential", "negated exponential",
                 "poisson", or "negated poisson".
 
                 This family defines how parameter values are modeled. With the
-                gaussian family, for example, parameter values are assumed to
+                normal family, for example, parameter values are assumed to
                 be normally distributed, and its mean and variance become
                 hyper-parameters.
 
                 Naturally, this family also defines range of
-                parameter values: with gaussian family, a parameter value can
+                parameter values: with normal family, a parameter value can
                 take any real values, but with log normal or exponential
                 family, a parameter to value can only be a positive real. With
                 poisson family, the parameter value can take only non-negative
@@ -299,24 +313,52 @@ class HyperParameter(object):
                 come useful. Negated exponential, for example, is -1 *
                 exponential distribution, which takes non-positive values.
 
-            - start (optional) : dict
+            - start (optional) : dict, default = None
                 default values are:
-                    {"mean": 0, "var": 1} for gaussian family
-                    {"mean": 0, "var": 1} for log normal family
+                    {"mu": 0, "sigma2": 1} for normal family
+                    {"mu": 0, "sigma2": 1} for log normal family
                     {"invrate": 1} for exponential family
                     {"rate": 1} for poisson family
 
+            - prior (optional) : dict, default = None
+
+                For normal and log normal families, prior parameters are
+                "mu0", "kappa0", "nu0", and "sigma20". Then, prior is give by:
+
+                    normal family:
+                        mu | sigma2 ~ Normal(mu0, sigma2 / kappa0)
+                        sigma ~ Uniform(0, inf)
+
+                    log normal family:
+                        mu | sigma2 ~ Normal(mu0, sigma2 / kappa0)
+                        sigma ~ Uniform(0, inf)
+
+                It is tempting to use the inverse Chisquare for sigma2:
+                        sigma2 ~ Scaled-Inv-Chisq(nu0, sigma20).
+                But this prior leads to improper posterior when nu0 and sigma20
+                are both close to zero. See page 117 on BDA3.
+
+                The interpretations of the above parameters are: mean is
+                estimated from observations with total precision (sum of all
+                individual precisions) kappa0 / sigma2 and with sample mean
+                mu0.  The default is {"mu0": 0, "kappa0": 0}.  Thus, the
+                default is improper non-informative.  For more details, see
+                pages 67-69 in BDA3.
+
+                For exponential faimily, prior parameters are "alpha0" and
+                "beta0".
+                    rate ~ Gamma(alpha0, beta0)
+                This parameterisation is equivalent to a total count of alpha0
+                observations with sum beta0. The default is {"alpha0": 0,
+                "beta0": 0}. For more details, see page 46 in BDA3.
+
+                For poisson family, prior parameters are "alpha" and "beta".
+                    rate ~ Gamma(alpha0, beta0)
+                This parameterisation is equivalent to a total count of alpha0
+                in beta0 prior observations. The default is {"alpha0": 0,
+                "beta0": 0}. For more details, see pages 43-44 in BDA3.
+
             - verbose (optional) : bool, default = False
-
-        Priors for the hyper-parameters are all non-informative improper:
-
-            gaussian family: mean, sqrt(var) ~ unif(-inf, inf)
-
-            log normal family: mean, sqrt(var) ~ exp(unif(-inf, inf))
-
-            exponential family: rate ~ gamma(0, 0)
-
-            poisson family: rate ~ gamma(1, 0)
 
         """
 
@@ -327,14 +369,24 @@ class HyperParameter(object):
             self._value = start
         else:
             self._value = {
-                "gaussian": {"mean": 0, "var": 1},
-                "log normal": {"mean": 0, "var": 1},
-                "negated log normal": {"mean": 0, "var": 1},
+                "normal": {"mu": 0, "sigma2": 1},
+                "log normal": {"mu": 0, "sigma2": 1},
+                "negated log normal": {"mu": 0, "sigma2": 1},
                 "exponential": {"invrate": 1},
                 "negated exponential": {"invrate": -1},
                 "poisson": {"rate": 1},
                 "negated poisson": {"rate": -1}
             }[self._family]
+
+        if prior is not None:
+            self._prior = prior
+        elif self._family in ("normal", "log normal", "negated log normal"):
+            self._prior = {"mu0": 0, "kappa0": 0, "nu0": 0, "sigma20": 0}
+        elif self._family in ("exponential", "negated exponential",
+                              "poisson", "negated poisson"):
+            self._prior = {"alpha0": 0, "beta0": 0}
+        else:
+            raise Exception("Invalid family: ", self._family)
 
         self._hyper_parameter_name = [name for name in self._value]
         self._verbose = verbose or False
@@ -354,27 +406,22 @@ class HyperParameter(object):
 
         if "negated" in self._family:
             x = -1 * x
+        if "log" in self._family:
+            x = numpy.log(x)
 
-        if self._family == "gaussian":
-            self._update_mean(x)
+        if "normal" in self._family:
             self._update_var(x)
-
-        elif "log normal" in self._family:
-            self._update_mean(numpy.log(x))
-            self._update_var(numpy.log(x))
-            self._value["mean"] = numpy.exp(self._value["mean"])
+            self._update_mean(x)
 
         elif "exponential" in self._family:
-            rate = self._update_rate_param(len(x), sum(x))
-            self._value["invrate"] = 1. / rate
+            self._update_rate_param(len(x), sum(x))
+            self._value["invrate"] = 1. / self._value["rate"]
 
         elif "poisson" in self._family:
-            # self._update_rate_param(sum(x), len(x))
-            # let's say prior is gamma(1, 0)
-            self._value["rate"] = self._update_rate_param(1 + sum(x), len(x))
+            self._update_rate_param(sum(x), len(x))
 
         if "negated" in self._family:
-            for key in ("mean", "invrate", "rate"):
+            for key in ("mu", "invrate", "rate"):
                 if key in self._value:
                     self._value[key] *= -1
 
@@ -382,32 +429,47 @@ class HyperParameter(object):
             print("\tupdated: %s" % self.values.__str__())
 
     def _update_mean(self, x):
-        sd = numpy.sqrt(self._value["var"] / len(x))
-        self._value["mean"] = numpy.random.normal(numpy.mean(x), sd)
+        """
+        See pages 68, 116-117, and 289 on BDA3.
+        """
+        n = len(x)
+
+        mu_n = (self._prior["kappa0"] * self._prior["mu0"] +
+                n * numpy.mean(x)) / (self._prior["kappa0"] + n)
+        kappa_n = self._prior["kappa0"] + n
+
+        sd = numpy.sqrt(self._value["sigma2"] / kappa_n)
+        self._value["mu"] = numpy.random.normal(mu_n, sd)
 
     def _update_var(self, x):
-        scale = sum([(xj - self._value["mean"]) ** 2 for xj in x]) /\
-            (len(x) - 1)
-        self._value["var"] = self._sample_inv_chi2(len(x) - 1, scale)
+        """
+        See pages 189-190 on BDA3.
+        """
+        n = len(x)
+        hat = numpy.sum((x - self._value["mu"]) ** 2) / (n - 1)
+        self._value["sigma2"] = self._sample_inv_chi2(n - 1, hat)
 
     def _sample_inv_chi2(self, v, s2):
         return scipy.stats.invgamma(v / 2., scale=(v / 2.) * s2).rvs()
 
     def _update_rate_param(self, shape, inv_scale):
-        return scipy.stats.gamma(a=shape, scale=1./inv_scale).rvs()
+        shape += self._prior["alpha0"]
+        inv_scale += self._prior["beta0"]
+        self._value["rate"] = \
+            scipy.stats.gamma(a=shape, scale=1./inv_scale).rvs()
 
     def get_distribution(self):
-        if self._family == "gaussian":
-            return scipy.stats.norm(loc=self._value["mean"],
-                                    scale=numpy.sqrt(self._value["var"]))
+        if self._family == "normal":
+            return scipy.stats.norm(loc=self._value["mu"],
+                                    scale=numpy.sqrt(self._value["sigma2"]))
 
         if self._family == "log normal":
-            return scipy.stats.norm(loc=numpy.log(self._value["mean"]),
-                                    scale=numpy.sqrt(self._value["var"]))
+            return scipy.stats.norm(loc=self._value["mu"],
+                                    scale=numpy.sqrt(self._value["sigma2"]))
 
         if self._family == "negated log normal":
-            return scipy.stats.norm(loc=numpy.log(-1 * self._value["mean"]),
-                                    scale=numpy.sqrt(self._value["var"]))
+            return scipy.stats.norm(loc=-1 * self._value["mu"],
+                                    scale=numpy.sqrt(self._value["sigma2"]))
 
         if self._family == "exponential":
             return scipy.stats.expon(scale=self._value["invrate"])
@@ -436,7 +498,7 @@ class HierarchicalBayes(object):
                  parameter_name, parameter_family, parameter_value_range,
                  n_groups, n_responses_per_group,
                  loglikelihood_function,
-                 loglikelihood_timeout=60,
+                 prior_for_hyperparameter=None, loglikelihood_timeout=60,
                  start_with_mle=False, verbose=False):
         """
         This class defines the step method and finds a starting state for MCMC.
@@ -447,7 +509,7 @@ class HierarchicalBayes(object):
                 e.g., ("alpha", "beta")
 
             - parameter_family : dict
-                e.g., {"alpha": "gaussian", "beta": "exponential"}
+                e.g., {"alpha": "normal", "beta": "exponential"}
 
             - parameter_value_range : dict
                 e.g., {"alpha": [0, 1], "beta": [2, 5]}
@@ -490,6 +552,9 @@ class HierarchicalBayes(object):
                      ll for the third group's first response,
                      ...]
 
+            - prior_for_hyperparameter (optional) : dict, default = None
+                See doc strings for sample_posterior and HyperParameter.
+
             - loglikelihood_timeout (optional) : int, default = 60
 
                 How many seconds to wait for likelihood computation. By
@@ -510,6 +575,10 @@ class HierarchicalBayes(object):
         self._parameter_family = parameter_family
         self._parameter_value_range = parameter_value_range
 
+        if prior_for_hyperparameter is None:
+            prior_for_hyperparameter = \
+                dict((name, None) for name in self._parameter_name)
+
         self._n_groups = n_groups
 
         if type(n_responses_per_group) == int:
@@ -522,50 +591,24 @@ class HierarchicalBayes(object):
 
         self._ll_index = numpy.hstack(
             [0, numpy.cumsum(self._n_responses_per_group)])
+        assert(len(self._ll_index) == self._n_groups + 1)
 
         self._find_starting_point()
         if start_with_mle:
             self._optimise_starting_point()
 
         if self._verbose:
-            print("Starting Point:")
+            print("Starting state:")
 
-        self._parameter = {}
-        for i, name in enumerate(self._parameter_name):
+        self._initialise_parameters(prior_for_hyperparameter)
+        self._determine_starting_point()
 
-            family = self._parameter_family[name]
-            val = self._starting_point[i]
-
-            if family in ("gaussian", "log normal", "negated log normal"):
-                start = {"mean": val,
-                         "var": numpy.sqrt(numpy.abs(val) / 10.)}
-            elif family in ("exponential", "negated exponential"):
-                start = {"invrate": val}
-            elif family in ("poisson", "negated poisson"):
-                start = {"rate": val}
-            else:
-                raise Exception("Invalid parameter family: %s" % family)
-
-            if self._verbose:
-                start_str = ", ".join(["%s: %.3f" % (key, start[key])
-                                       for key in start])
-                print("\t %s %s {%s}" % (name, family, start_str))
-
-            self._parameter[name + "_hyper"] = \
-                HyperParameter(name, family, start)
-
-            prior = self._get_parameter_prior(name)
-            self._parameter[name] = [Parameter(name, j, family, prior)
-                                     for j in range(n_groups)]
-
-        ll = self._compute_parameter_loglikelihood()
-        for name in self._parameter_name:
-            for i in range(self._n_groups):
-                self._parameter[name][i].log_likelihood = ll[i]
+        if self._verbose:
+            print("")
 
     def _find_starting_point(self):
         if self._verbose:
-            print("Looking for a reasonable starting point: %s." %
+            print("Started looking for a reasonable starting state at %s." %
                   datetime.datetime.now().strftime(DATETIMEFMT))
 
         ll = numpy.inf
@@ -586,6 +629,11 @@ class HierarchicalBayes(object):
 
         self._starting_point = x
 
+        if self._verbose:
+            print("Found a starting state at %s." %
+                  datetime.datetime.now().strftime(DATETIMEFMT),
+                  end="\n\n")
+
     def _mle_objective_function(self, x):
         valid = True
         for i, name in enumerate(self._parameter_name):
@@ -599,7 +647,7 @@ class HierarchicalBayes(object):
                 valid = False
 
         if not valid:
-            return -1 * NEGATIVE_INFINITY
+            return -1 * float("inf")
 
         param = [[p for i in range(self._n_groups)] for p in x]
         ll = self._loglikelihood_function(param)
@@ -607,7 +655,7 @@ class HierarchicalBayes(object):
 
     def _optimise_starting_point(self):
         if self._verbose:
-            print("Optimising a starting point: %s." %
+            print("Started optimising a starting state at %s." %
                   datetime.datetime.now().strftime(DATETIMEFMT))
 
         optimised = False
@@ -625,7 +673,7 @@ class HierarchicalBayes(object):
             if self._verbose:
                 print("\t%s %.2f." % (res.message, res.fun))
 
-            if res.fun < -0.9 * NEGATIVE_INFINITY:
+            if numpy.isfinite(res.fun):
                 self._starting_point = res.x
 
                 if res.success:
@@ -635,8 +683,71 @@ class HierarchicalBayes(object):
                 self._find_starting_point()
 
             if n > 10:
-                raise Exception("Cannot optimise a starting point. "
-                                "Revise the value ranges")
+                if self._verbose:
+                    print("Could not find a local maxima. "
+                          "A random point is taken as a starting state.")
+
+                self._starting_point = res.x
+                optimised = True
+
+        if self._verbose:
+            print("Optimised a starting state: %s." %
+                  datetime.datetime.now().strftime(DATETIMEFMT))
+
+    def _initialise_parameters(self, prior_for_hyperparameter):
+        self._parameter = {}
+        for i, name in enumerate(self._parameter_name):
+
+            family = self._parameter_family[name]
+            val = self._starting_point[i]
+
+            # if family in ("normal", "log normal", "negated log normal"):
+            if family in ("normal",):
+                start = {"mu": val,
+                         "sigma2": numpy.sqrt(numpy.abs(val) / 10.)}
+            elif family in ("log normal", "negated log normal"):
+                start = {"mu": numpy.sign(val) * numpy.log(abs(val)),
+                         "sigma2": numpy.sqrt(numpy.abs(val) / 10.)}
+            elif family in ("exponential", "negated exponential"):
+                start = {"invrate": val}
+            elif family in ("poisson", "negated poisson"):
+                start = {"rate": val}
+            else:
+                raise Exception("Invalid parameter family: %s" % family)
+
+            if self._verbose:
+                start_str = ", ".join(["%s: %.8f" % (key, start[key])
+                                       for key in start])
+                print("\t %s %s {%s}" % (name, family, start_str))
+
+            if name not in prior_for_hyperparameter:
+                prior = None
+            else:
+                prior = prior_for_hyperparameter[name]
+
+            self._parameter[name + "_hyper"] = \
+                HyperParameter(name, family, start=start, prior=prior)
+
+            prior = self._get_parameter_prior(name)
+            self._parameter[name] = [Parameter(name, j, family, prior)
+                                     for j in range(self._n_groups)]
+
+    def _determine_starting_point(self):
+        if self._verbose:
+            print("Determining individual startin states at %s." %
+                  datetime.datetime.now().strftime(DATETIMEFMT))
+
+        ll = [-1 * float("inf")] * self._n_groups
+
+        while not all(numpy.isfinite(ll)):
+            ll = self._compute_parameter_loglikelihood()
+
+            for name in self._parameter_name:
+                for i in range(self._n_groups):
+                    if numpy.isfinite(ll[i]):
+                        self._parameter[name][i].log_likelihood = ll[i]
+                    else:
+                        self._parameter[name][i].sample_prior_and_set_value()
 
     def _get_parameter_prior(self, name):
         return self._parameter[name + "_hyper"].get_distribution()
@@ -647,14 +758,15 @@ class HierarchicalBayes(object):
             for i in range(self._n_groups):
                 self._parameter[name][i].propose()
 
-            ll = self._compute_parameter_loglikelihood(proposed_parameter=name)
+            llarray = self._compute_parameter_loglikelihood(
+                proposed_parameter=name)
 
-            for i in range(self._n_groups):
-                accepted = self._parameter[name][i].step(ll[i])
+            for i, ll in enumerate(llarray):
+                accepted = self._parameter[name][i].step(ll)
 
                 if accepted:
                     for name_ in self._parameter_name:
-                        self._parameter[name_][i].log_likelihood = ll[i]
+                        self._parameter[name_][i].log_likelihood = ll
 
                 if tune:
                     self._parameter[name][i].tune()
@@ -685,9 +797,14 @@ class HierarchicalBayes(object):
         except TimeoutError:
             print("Likelihood computation timed out.")
             ll = numpy.zeros(sum(self._n_responses_per_group))
-            ll += NEGATIVE_INFINITY
+            ll += float("inf")
         finally:
             signal.alarm(0)
+
+        # j = 15
+        # print("parameter: [%s], ll: %s"
+        #       % (", ".join(["%f" % x[k][j] for k in range(len(self._parameter_name))]),
+        #          ", ".join(["%f" % l for l in ll[self._ll_index[j]:self._ll_index[j + 1]]])))
 
         return [sum(ll[self._ll_index[i]:self._ll_index[i + 1]])
                 for i in range(self._n_groups)]
@@ -720,7 +837,8 @@ class HierarchicalBayes(object):
 
 
 class MCMC(object):
-    def __init__(self, step_method, chain=0, sampledir=None,
+    def __init__(self, step_method, chain, sampledir=None,
+                 save_loglikelihoods=True,
                  display_progress=True, verbose=False):
         """
         MCMC class to sample from posterior.
@@ -734,13 +852,14 @@ class MCMC(object):
 
             - step_method : HierarchicalBayes
 
-            - chain (optional) : int, default = 0
-                This integer is used as part of file name to save samples and
-                log likelihoods.
-
             - sampledir (optional) : str, default = None
                 Where to save posterior samples. When it is None, samples are
                 not saved into a file.
+
+            - save_loglikelihoods (optional) : bool, defalt = True
+                Whether to save loglikelihood when saving samples. Saved
+                loglikelihood can be used to compute waic or loo with loo
+                package in R.
 
             - display_progress (optional) : bool, default = True
                 Whether to display progress and estimated time of termination.
@@ -751,22 +870,27 @@ class MCMC(object):
 
         self._step_method = step_method
         self._chain = chain
+        self._save_loglikelihoods = save_loglikelihoods
         self._display_progress = display_progress
         self._verbose = verbose or False
 
         if sampledir is not None:
-            sample_file = sampledir + "/sample.%i.csv" % chain
-            ll_file = sampledir + "/log_likelihood.%i.csv" % chain
-
             i = 0
+            sample_file = sampledir + "/sample.%i.csv" % i
+            ll_file = sampledir + "/log_likelihood.%i.csv" % i
+
             while os.path.isfile(sample_file):
-                sample_file = sampledir + "/sample.%i.%i.csv" % (chain, i)
-                ll_file = sampledir + "/log_likelihood.%i.%i.csv" % (chain, i)
                 i += 1
+                sample_file = sampledir + "/sample.%i.csv" % i
+                ll_file = sampledir + "/log_likelihood.%i.csv" % i
 
             # create empty files
             open(sample_file, "w").close()
-            open(ll_file, "w").close()
+
+            if self._save_loglikelihoods:
+                open(ll_file, "w").close()
+            else:
+                ll_file = None
 
         else:
             sample_file = None
@@ -808,7 +932,7 @@ class MCMC(object):
         self._tune_interval = int(tune_interval)
 
         if self._verbose:
-            print("Chain %i sampling: %s." %
+            print("Chain %i. Sampling initialised at %s." %
                   (self._chain,
                    datetime.datetime.now().strftime(DATETIMEFMT)))
 
@@ -842,7 +966,9 @@ class MCMC(object):
             # Record sample to trace, if appropriate
             if i % self._thin == 0 and i >= self._burn:
                 self._print_sample(i)
-                self._print_loglikelihood()
+
+                if self._save_loglikelihoods:
+                    self._print_loglikelihood()
 
             if self._display_progress and (i % display_interval == 0):
                 self._print_progress(i)
@@ -874,7 +1000,8 @@ class MCMC(object):
             elapsed = now - self._start_time
             self._print(None, "\t100%% complete at %s. Elapsed Time: %s" %
                         (now.strftime(DATETIMEFMT),
-                         datetime.timedelta(seconds=elapsed.seconds)))
+                         datetime.timedelta(
+                            seconds=int(elapsed.total_seconds()))))
         else:
             percentage = float(i) / self._iter
             remain = (1 - percentage) * (now - self._start_time) / percentage
@@ -894,479 +1021,13 @@ class MCMC(object):
                 h.write("\n")
 
 
-class Diagnostic(object):
-    def __init__(self, sampledir):
-        """
-        Diagnostic class.
-
-        This class computes rhat and the effective number of samples and saves
-        them in summary.csv under the same directory as sampledir.
-
-        The computation is as defined in Gelman, A., Carlin, J., Stern, H.,
-        Dunson, D., Vehtari, A., and Rubin, D. (2013). Bayesian Data Analysis,
-        Third Edition.
-
-        """
-
-        sample_files = glob.glob(sampledir + "/sample*.csv")
-        self._organise_samples(sample_files)
-
-        self._B = None
-        self._W = None
-        self._vhat = None
-        self._rho = None
-
-        self._rhat = None
-        self._effective_n = None
-        self._median = None
-        self._hdi = None
-        self._hdi_p = 95
-        self._summary = None
-
-    def _organise_samples(self, sample_files):
-        """
-
-        This loads up the csv files with MCMC samples, and divide samples from
-        each chain into first and second halves, as required for the
-        computation.
-
-        """
-
-        self._m = len(sample_files) * 2
-        self._samples = {}
-        for i, filename in enumerate(sample_files):
-            d = pandas.read_csv(filename, engine="python")
-
-            if i == 0:
-                n = d.shape[0]
-                self._n = n // 2
-                index = dict((key, 0) for key in d.dtypes.index)
-
-            for key in d.dtypes.index:
-                if key in ("chain", "index"):
-                    continue
-
-                if i == 0:
-                    self._samples[key] = numpy.zeros((self._m, self._n))
-
-                samples = d[key].tolist()
-                self._samples[key][index[key], :] = samples[0:self._n]
-                index[key] += 1
-                self._samples[key][index[key], :] = samples[self._n:n]
-                index[key] += 1
-
-    def _compute_between_sequence_variance(self):
-        if self._B is not None:
-            return 0
-
-        self._B = {}
-        for key in self._samples:
-            self._B[key] = self._n * numpy.var(numpy.mean(self._samples[key],
-                                                          axis=1),
-                                               ddof=1)
-
-    def _compute_within_sequence_variance(self):
-        if self._W is not None:
-            return 0
-
-        self._W = {}
-        for key in self._samples:
-            self._W[key] = numpy.mean(numpy.var(self._samples[key],
-                                                axis=1,
-                                      ddof=1))
-
-    def _compute_marginal_posterior_variance(self):
-        if self._vhat is not None:
-            return 0
-
-        self._vhat = {}
-        self._compute_between_sequence_variance()
-        self._compute_within_sequence_variance()
-        for key in self._samples:
-            self._vhat[key] = self._W[key] * (self._n - 1) / self._n + \
-                              self._B[key] / self._n
-
-    def _compute_variogram(self, t, key):
-        return (sum(sum((self._samples[key][j][i] -
-                         self._samples[key][j][i - t]) ** 2
-                    for i in range(t, self._n))
-                    for j in range(self._m)) /
-                (self._m * (self._n - t)))
-
-    def _compute_autocorrelation(self):
-        if self._rho is not None:
-            return 0
-
-        self._rho = {}
-        self._compute_marginal_posterior_variance()
-        for key in self._samples:
-            self._rho[key] = numpy.zeros(self._n)
-
-            for t in range(self._n):
-                self._rho[key][t] = 1. - \
-                                    self._compute_variogram(t, key) / \
-                                    (2. * self._vhat[key])
-
-    @property
-    def rhat(self):
-        if self._rhat is None:
-            self._compute_rhat()
-        return self._rhat
-
-    def _compute_rhat(self):
-        if self._rhat is not None:
-            return 0
-
-        self._rhat = {}
-        self._compute_within_sequence_variance()
-        self._compute_marginal_posterior_variance()
-        for key in self._samples:
-            self._rhat[key] = numpy.sqrt(self._vhat[key] / self._W[key])
-
-    @property
-    def effective_n(self):
-        if self._effective_n is None:
-            self._compute_effective_n()
-        return self._effective_n
-
-    def _compute_effective_n(self):
-        if self._effective_n is not None:
-            return 0
-
-        self._effective_n = {}
-        self._compute_marginal_posterior_variance()
-        self._compute_autocorrelation()
-        for key in self._samples:
-
-            fnd = False
-            T = None
-            for t in range(self._n - 2):
-                if not fnd and not t % 2:
-                    fnd = (self._rho[key][t + 1] + self._rho[key][t + 2]) < 0
-                if fnd:
-                    T = t
-                    break
-
-            if T is None:
-                T = self._n - 1
-
-            self._effective_n[key] = (self._m * self._n) /\
-                                     (1 + 2 *
-                                      numpy.sum(self._rho[key][0:T + 1]))
-
-    @property
-    def summary(self):
-        if self._summary is None:
-            self._summarise()
-        return self._summary
-
-    def _summarise(self):
-        if self._summary is not None:
-            return 0
-
-        self._compute_rhat()
-        self._compute_effective_n()
-        self._compute_median_and_hdi()
-
-        self._summary = numpy.array([(key.encode(),
-                                      self._rhat[key], self._rhat[key] < 1.1,
-                                      self._effective_n[key],
-                                      self._effective_n[key] > self._m * 10,
-                                      self._median[key],
-                                      self._hdi[key][0],
-                                      self._hdi[key][1])
-                                     for key in self._samples],
-                                    dtype=[("parameter", "S40"),
-                                           ("rhat", float),
-                                           ("converged", bool),
-                                           ("effective_n", float),
-                                           ("enough n", bool),
-                                           ("median", float),
-                                           ("HDI lower", float),
-                                           ("HDI upper", float)])
-
-    def print(self, csvfile=None, hyperonly=False):
-        """
-        Print out summary onto either csvfile or stdout.
-
-        :Arguments:
-
-            - csvfile (optional) : str, default = None
-                The file name with the path to store the sample summary. When
-                None, the summary is printed on stdout.
-
-            - hyperonly (optional) : bool, default = False
-                When True, the summary for only the hyper-parameters is
-                printed.
-
-        """
-        self._summarise()
-
-        out = ",".join([key for key in self._summary.dtype.names])
-        out += "\n"
-        for row in self._summary:
-            if hyperonly and (b"_" not in row[0]):
-                continue
-
-            out += "'%s',%.3f,%s,%.3f,%s,%.3f,%.3f,%.3f\n" % \
-                   (row[0].decode("ascii"), row[1], row[2], row[3],
-                    row[4], row[5], row[6], row[7])
-
-        if csvfile is None:
-            print(out.replace(",", ",\t"))
-
-        else:
-            with open(csvfile, "w") as h:
-                h.write(out)
-
-    @property
-    def median(self):
-        if self._median is None:
-            self._compute_median_and_hdi()
-        return self._median
-
-    @property
-    def hdi(self):
-        if self._hdi is None:
-            self._compute_median_and_hdi()
-        return self._hdi
-
-    def _compute_median_and_hdi(self):
-        if self._median is not None and self._hdi is not None:
-            return 0
-
-        self._median, self._hdi = {}, {}
-        for key in self._samples:
-            samples = self._samples[key].flatten()
-            self._median[key] = numpy.median(samples)
-            self._hdi[key] = self._compute_hpd_interval(samples)
-
-    def _compute_hpd_interval(self, samples):
-        prob = self._hdi_p / 100.
-        sorted_samples = numpy.array(sorted(samples))
-        n_samples = len(samples)
-        gap = max(1, min(n_samples - 1, round(n_samples * prob)))
-        init = numpy.array(range(n_samples - gap))
-        tmp = sorted_samples[init + gap] - sorted_samples[init]
-        inds = numpy.where(tmp == min(tmp))[0][0]
-        interval = (sorted_samples[inds], sorted_samples[inds + gap])
-
-        return interval
-
-
-class Figure(object):
-    def __init__(self, sampledir):
-        """
-        Figure class to assess mixing and convergence of MCMC chains.
-
-        :Arguments:
-
-            - sampledir : str
-                A path to the directory where sample csv files are stored.
-
-        """
-
-        plt.close("all")
-
-        self._load_samples(sampledir)
-        self._load_summary(sampledir)
-
-        suffices = numpy.unique(["[" + name.split("[")[1]
-                                 for name in self._keys if "[" in name])
-        self._key_suffices = numpy.hstack([["_"], suffices])
-
-        self._colours = numpy.array(["blue", "red", "green", "magenta",
-                                     "cyan", "yellow", "black"])[:self._m]
-
-    def _load_samples(self, sampledir):
-        sample_files = glob.glob(sampledir + "/sample*.csv")
-
-        self._m = len(sample_files)
-        self._samples = {}
-        self._value_range = {}
-
-        for i, filename in enumerate(sample_files):
-            d = pandas.read_csv(filename, engine="python")
-
-            if i == 0:
-                self._n = d.shape[0]
-                self._keys = [key for key in d.dtypes.index
-                              if key not in ("chain", "index")]
-
-            for key in self._keys:
-                if i == 0:
-                    self._samples[key] = numpy.zeros((self._n, self._m))
-
-                self._samples[key][:, i] = d[key].tolist()
-
-    def _load_summary(self, sampledir):
-        self._summary = pandas.read_csv(sampledir + "/summary.csv",
-                                        quotechar="'")
-
-    def traceplots(self, dest, n=30):
-        """
-        Creates traceplots. Useful for assessing mixing and convergence.
-
-        :Arguments:
-
-            - dest : str
-                A path to directory to save figures
-
-            - n (optional) : int, default = 30
-                How many traceplots to create.
-
-        """
-
-        for i, key_suffix in enumerate(self._key_suffices[:n]):
-
-            progress = "Creating traceplots: %i out of %i" % (i + 1, n)
-            if i != 0:
-                print("\r" * len(progress), end="")
-            print(progress, end="")
-
-            plotname = dest + "/traceplot%s.png" % key_suffix
-            keys = sorted([key for key in self._keys if key_suffix in key])
-            self.traceplot(keys, plotname)
-
-        print("\r" * len(progress), end="")
-        print(" " * len(progress), end="")
-        print("\r" * len(progress), end="")
-        print("Creating traceplots: Done.")
-
-    def traceplot(self, keys=None, dest=None):
-        """
-        Creates one traceplot.
-        """
-
-        if keys is None:
-            keys = sorted([key for key in self._keys if "_mean" in key])
-
-        n = len(keys)
-        figsize = (12, n * 2)
-        fig, ax = plt.subplots(n, 2, figsize=figsize)
-
-        if n == 1:
-            ax = numpy.matrix([ax[0], ax[1]])
-
-        for i, key in enumerate(keys):
-            rhat = self._summary[self._summary["parameter"] == key]["rhat"]
-
-            title = key.replace("_", " ")
-            title += " (rhat=%.3f)" % float(rhat)
-
-            self._kdeplot(ax[i, 0], key)
-            ax[i, 0].set_title(title)
-            ax[i, 0].set_xlabel("Sample Value")
-            ax[i, 0].set_ylabel("Log Density")
-            ax[i, 0].set_yticks([])
-
-            self._plot(ax[i, 1], key)
-            ax[i, 1].set_title(title)
-            ax[i, 1].set_xlabel("Iteration")
-            ax[i, 1].set_ylabel("Sample Value")
-
-        plt.tight_layout()
-        if dest is None:
-            plt.show()
-        else:
-            plt.savefig(dest)
-            plt.close()
-
-    def _kdeplot(self, ax, key):
-        for i in range(self._m):
-            d = self._samples[key][:, i]
-
-            if numpy.var(d) > 1e-8:
-                density = kde.gaussian_kde(d)
-                l = numpy.min(d)
-                u = numpy.max(d)
-                x = numpy.linspace(0, 1, 100) * (u - l) + l
-                ax.plot(x, numpy.log(density(x)),
-                        color=self._colours[i])
-
-    def _plot(self, ax, key):
-        for i in range(self._m):
-            ax.plot(self._samples[key][:, i], color=self._colours[i])
-
-    def bivariates(self, dest, n=30):
-        """
-
-        Creates bivariate plots of samples. Useful for assessing pairwise
-        relationship between variables.
-
-        :Arguments:
-
-            - dest : str
-                A path to directory to save figures
-
-            - n (optional) : int, default = 30
-                How many plots to create.
-
-        """
-
-        for i, key_suffix in enumerate(self._key_suffices[:n]):
-
-            progress = "Creating bivariate plots: %i out of %i" % (i + 1, n)
-            if i != 0:
-                print("\r" * len(progress), end="")
-            print(progress, end="")
-
-            plotname = dest + "/bivariate%s.png" % key_suffix
-            keys = sorted([key for key in self._keys if key_suffix in key])
-            self.bivariate(keys, plotname)
-
-        print("\r" * len(progress), end="")
-        print(" " * len(progress), end="")
-        print("\r" * len(progress), end="")
-        print("Creating bivariate plots: Done.")
-
-    def bivariate(self, keys=None, dest=None):
-        """
-        Create one bivariate plot.
-        """
-
-        if keys is None:
-            keys = sorted([key for key in self._keys if "_mean" in key])
-
-        n = len(keys)
-        if n == 1:
-            return 0
-
-        figsize = (n * 2, n * 2)
-        fig, ax = plt.subplots(n, n, figsize=figsize)
-
-        for i, keyy in enumerate(keys):
-            for j, keyx in enumerate(keys):
-
-                if i == j:
-                    ax[i, j].text(0.5, 0.5, keyx.replace("_", " "),
-                                  horizontalalignment="center",
-                                  verticalalignment="center",
-                                  transform=ax[i, j].transAxes)
-                    ax[i, j].set_axis_off()
-                    continue
-
-                for k in range(self._m):
-                    ax[i, j].scatter(self._samples[keyx][:, k],
-                                     self._samples[keyy][:, k],
-                                     color=self._colours[k],
-                                     s=5, alpha=0.1)
-
-        plt.tight_layout()
-        if dest is None:
-            plt.show()
-        else:
-            plt.savefig(dest)
-            plt.close()
-
-
-def run_mcmc(parameter_name, parameter_family, parameter_value_range,
-             n_groups, n_responses_per_group,
-             loglikelihood_function,
-             n_chains, n_iter, n_samples, outputdir,
-             loglikelihood_timeout=60,
-             start_with_mle=True,
-             n_processes=0):
+def sample_posterior(parameter_name, parameter_family, parameter_value_range,
+                     n_groups, n_responses_per_group, loglikelihood_function,
+                     n_chains, n_iter, n_samples, outputdir,
+                     prior_for_hyperparameter=None, start_with_mle=True,
+                     chain_seed=None, loglikelihood_timeout=60,
+                     n_processes=None, clear_outputdir=True,
+                     save_loglikelihoods=True, verbose=True):
     """
     This function uses the classes defined above and runs MCMC.
 
@@ -1378,7 +1039,7 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
 
         - parameter_family : dict
 
-            e.g., {"alpha": "gaussian", "beta": "exponential"}
+            e.g., {"alpha": "normal", "beta": "exponential"}
 
         - parameter_value_range : dict
 
@@ -1394,7 +1055,7 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
         - loglikelihood_function : def
             see doc string for HierarchicalBayes
 
-        - n_iter: int
+        - n_iter : int
             Number of iteration per chain
 
         - n_samples: int
@@ -1405,35 +1066,61 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
             figures (traceplots and bivariate). Before running MCMC, everything
             under this path will be removed.
 
-        - loglikelihood_timeout (optional) : int, default = 60
-            How many seconds to wait for likelihood computation. By default, if
-            the loglikelihood_function does not return a value in 60 seconds,
-            the likelihood is treated as 0. This may help speeding up MCMC
-            sampling.
+        - prior_for_hyperparameter (optional) : dict, default = None
+            Prior parameter values for hyper-parameters. If None (default), the
+            improper non-informative prior is used. This needs to be dict of
+            dicts.
+                e.g., {"alpha": {"mu0": 0, "kappa0": 0,
+                                 "nu0": 0, "sigma20": 0},
+                        "beta": {"alpha0": 0, "beta0": 0}}
+            See doc string for HyperParameter for more details.
 
         - start_with_mle (optional) : bool, default = True
             Whether to start a chain with maximum likelihood estimation.
             This estimation pools groups and uses Nelder-Mead method.
 
-        - n_processes (optional) : int, default = 0
-            How many processes to launch. If zero (default), multiprocessing is
-            not triggered.
+        - chain_seed (optional) : iterable, default = range(n_chains)
+            Seed for random number generation. The length of the seeds has to
+            be the same as the number of chains.
+
+        - loglikelihood_timeout (optional) : int, default = 60
+            How many seconds to wait for likelihood computation. By default, if
+            the loglikelihood_function does not return a value within 60
+            seconds, the likelihood is treated as 0. This may help speeding up
+            MCMC sampling.
+
+        - n_processes (optional) : int, default = 1
+            How many processes to launch. If 1 (default), multiprocessing is
+            not triggered. If zero, all the available cores are used.
+
+        - clear_outputdir (optional) : bool, default = True
+            Whether to delete all the files in the outputdir.
+
+        - save_loglikelihoods (optional) : bool, defalt = True
+            Whether to save loglikelihood when saving samples. Saved
+            loglikelihood can be used to compute waic or loo with loo package
+            in R.
+
+        - verbose (optional) : bool, default = True
+            Whether to display progress.
 
     """
 
     assert(n_iter >= n_samples)
-    print("Started at %s." %
-          datetime.datetime.now().strftime(DATETIMEFMT))
+    started = datetime.datetime.now()
 
-    if os.path.exists(outputdir):
+    if verbose:
+        print("Initialised at %s." % started.strftime(DATETIMEFMT))
+
+    if clear_outputdir and os.path.exists(outputdir):
         shutil.rmtree(outputdir)
 
-    sampledir = outputdir + "/sample/"
-    traceplotdir = outputdir + "/figure/traceplot/"
-    bivariatedir = outputdir + "/figure/bivariate/"
+    if chain_seed is None:
+        chain_seed = range(n_chains)
+    assert(len(chain_seed) == n_chains)
 
-    for directory in (sampledir, traceplotdir, bivariatedir):
-        os.makedirs(directory, exist_ok=True)
+    sampledir = outputdir + "/sample/"
+    os.makedirs(sampledir, exist_ok=True)
 
     if n_iter // 2 > n_samples:
         burn = n_iter // 2
@@ -1443,72 +1130,89 @@ def run_mcmc(parameter_name, parameter_family, parameter_value_range,
     thin = int(numpy.ceil((n_iter - burn) / n_samples))
     tune_interval = 100
 
-    if n_processes <= 0:
-        for chain in range(n_chains):
+    if n_processes == 0:
+        n_processes = min(n_chains, multiprocessing.cpu_count())
+
+    if n_processes == 1:
+        for chain, seed in enumerate(chain_seed):
             _sample(
                 parameter_name, parameter_family, parameter_value_range,
                 n_groups, n_responses_per_group, loglikelihood_function,
-                chain, n_iter, n_samples, burn, thin, tune_interval,
-                sampledir, loglikelihood_timeout, start_with_mle)
+                prior_for_hyperparameter,
+                seed, chain, n_iter, n_samples, burn, thin, tune_interval,
+                sampledir, loglikelihood_timeout, start_with_mle,
+                save_loglikelihoods, verbose)
 
-    elif n_processes > 0:
+    elif n_processes > 1:
         _parallel_sample(
             parameter_name, parameter_family, parameter_value_range,
             n_groups, n_responses_per_group, loglikelihood_function,
-            n_chains, n_iter, n_samples, burn, thin, tune_interval,
-            sampledir, loglikelihood_timeout, start_with_mle, n_processes)
+            prior_for_hyperparameter,
+            chain_seed, n_iter, n_samples, burn, thin, tune_interval,
+            sampledir, loglikelihood_timeout, start_with_mle, n_processes,
+            save_loglikelihoods, verbose)
 
-    diagnostic = Diagnostic(sampledir)
-    diagnostic.print(sampledir + "/summary.csv")
-    diagnostic.print(hyperonly=True)
+    else:
+        print("Invalid number of processes: ", n_processes)
+        print("Exiting.")
+        sys.exit()
 
-    fig = Figure(sampledir)
-    fig.traceplots(traceplotdir)
-    fig.bivariates(bivariatedir)
+    finished = datetime.datetime.now()
+    elapsed = finished - started
+    print("Finished at %s. The elapsed time in total is %s." %
+          (finished.strftime(DATETIMEFMT),
+           datetime.timedelta(seconds=int(elapsed.total_seconds()))),
+          end="\n\n")
 
 
 def _sample(parameter_name, parameter_family, parameter_value_range,
             n_groups, n_responses_per_group, loglikelihood_function,
-            chain, n_iter, n_samples, burn, thin, tune_interval,
+            prior_for_hyperparameter,
+            seed, chain, n_iter, n_samples, burn, thin, tune_interval,
             sampledir, loglikelihood_timeout, start_with_mle,
-            verbose=True):
+            save_loglikelihoods, verbose):
 
-    numpy.random.seed(chain)
+    numpy.random.seed(seed)
 
-    method = HierarchicalBayes(parameter_name,
-                               parameter_family,
-                               parameter_value_range,
-                               n_groups,
-                               n_responses_per_group,
-                               loglikelihood_function,
-                               loglikelihood_timeout,
-                               start_with_mle=start_with_mle,
-                               verbose=verbose)
+    method = HierarchicalBayes(
+        parameter_name, parameter_family, parameter_value_range,
+        n_groups, n_responses_per_group, loglikelihood_function,
+        prior_for_hyperparameter=prior_for_hyperparameter,
+        loglikelihood_timeout=loglikelihood_timeout,
+        start_with_mle=start_with_mle,
+        verbose=verbose)
 
-    mcmc = MCMC(method, chain,
-                sampledir=sampledir,
-                display_progress=verbose,
-                verbose=verbose)
+    mcmc = MCMC(
+        method, chain,
+        sampledir=sampledir,
+        save_loglikelihoods=save_loglikelihoods,
+        display_progress=verbose,
+        verbose=verbose)
 
     mcmc.sample(n_iter, burn, thin, tune_interval)
 
 
 def _parallel_sample(parameter_name, parameter_family, parameter_value_range,
                      n_groups, n_responses_per_group, loglikelihood_function,
-                     n_chains, n_iter, n_samples, burn, thin, tune_interval,
+                     prior_for_hyperparameter,
+                     chain_seed, n_iter, n_samples, burn, thin, tune_interval,
                      sampledir, loglikelihood_timeout, start_with_mle,
-                     n_processes):
+                     n_processes, save_loglikelihoods, verbose):
+
+    n_chains = len(chain_seed)
 
     processes = [Process(target=_sample,
                          args=(parameter_name, parameter_family,
                                parameter_value_range,
                                n_groups, n_responses_per_group,
                                loglikelihood_function,
-                               chain, n_iter, n_samples,
+                               prior_for_hyperparameter,
+                               chain_seed[chain], chain, n_iter, n_samples,
                                burn, thin, tune_interval,
                                sampledir, loglikelihood_timeout,
                                start_with_mle,
-                               (chain % n_processes) == 0))
+                               save_loglikelihoods,
+                               verbose and (chain % n_processes) == 0))
                  for chain in range(n_chains)]
 
     processings = []
