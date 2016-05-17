@@ -5,7 +5,6 @@ import os
 import glob
 import numpy
 import pandas
-from scipy.stats import kde
 import matplotlib.pyplot as plt
 
 
@@ -19,18 +18,23 @@ def diagnoseSamples(outputDirectory,
     os.makedirs(diagnosticDirectory, exist_ok=True)
 
     if assessConvergence:
+        print("- Convergence Diagnostic -")
         diagnostic = Diagnostic(sampleDirectory)
         path = diagnosticDirectory + "/diagnosticAssessment.csv"
         diagnostic.print(path, False, False)
+
+        if diagnostic.completelyPooled:
+            diagnostic.print(None, False, False)
 
         if diagnostic.partiallyPooled:
             path = diagnosticDirectory + "/diagnosticAssessmentHyperOnly.csv"
             diagnostic.print(path, False, True)
             diagnostic.print(None, False, True)
 
-        path = diagnosticDirectory + "/diagnosticAssessmentIndividual.csv"
-        diagnostic.print(path, True, False)
-        diagnostic.print(None, True, False)
+        if not diagnostic.completelyPooled:
+            path = diagnosticDirectory + "/diagnosticAssessmentIndividual.csv"
+            diagnostic.print(path, True, False)
+            diagnostic.print(None, True, False)
 
     if printSummary:
         summary = Summary(sampleDirectory)
@@ -94,6 +98,7 @@ class Diagnostic(object):
         self._m = len(sampleFiles) * 2
         self._samples = {}
         self.partiallyPooled = False
+        self.completelyPooled = True
         for i, filename in enumerate(sampleFiles):
             d = pandas.read_csv(filename, engine="python")
 
@@ -108,6 +113,9 @@ class Diagnostic(object):
 
                 if "_" in key:
                     self.partiallyPooled = True
+
+                if "01]" in key:
+                    self.completelyPooled = False
 
                 if i == 0:
                     self._samples[key] = numpy.zeros((self._m, self._n))
@@ -313,6 +321,10 @@ class Diagnostic(object):
                 summary for only the hyper-parameters is printed.
 
         """
+        if individualSummary and self.completelyPooled:
+            raise ValueError(
+                "MCMC was completely pooled. There is no individual summary.")
+
         if hyperOnly and not self.partiallyPooled:
             raise ValueError(
                 "MCMC was not partially pooled. There is no hyper-parameter.")
@@ -323,8 +335,10 @@ class Diagnostic(object):
 
         if (csvfile is None) and hyperOnly:
             print("MCMC convergence diagnostic for hyper-parameters.")
-        if (csvfile is None) and individualSummary:
-            print("MCMC convergence diagnostic for individual parameters.")
+        elif (csvfile is None) and individualSummary:
+            print("Summary of MCMC convergence diagnostic.")
+        elif csvfile is None:
+            print("MCMC convergence diagnostic.")
 
         if not individualSummary:
             out = self._getAssessmentString(hyperOnly)
@@ -430,15 +444,16 @@ class Summary(object):
                     self._median[name].append(numpy.median(x))
 
     def _summarise(self):
-        self._summary = "stats,parameter,mean,HDI lower,HDI upper\n"
+        self._summary = "stats,parameter,mean,median,HDI lower,HDI upper\n"
 
         for s, d in zip(("mean", "median"), (self._mean, self._median)):
             for name in sorted(d):
-                m = numpy.mean(d[name])
+                mean = numpy.mean(d[name])
+                median = numpy.median(d[name])
                 hdi = _computeHpdInterval(d[name], 95.)
 
-                self._summary += "%s,%s,%.4f,%.4f,%.4f\n"\
-                    % (s, name, m, hdi[0], hdi[1])
+                self._summary += "%s,%s,%.4f,%.4f,%.4f,%.4f\n"\
+                    % (s, name, mean, median, hdi[0], hdi[1])
 
     def print(self, csvfile):
         if csvfile is None:
@@ -603,7 +618,7 @@ class Figure(object):
                 rhat = self._diagnosticAssessment[index]["rhat"]
                 title += " (rhat=%.3f)" % float(rhat)
 
-            self._kdeplot(ax[i, 0], key)
+            self._hist(ax[i, 0], key)
             ax[i, 0].set_title(title)
             ax[i, 0].set_xlabel("Sample Value")
             ax[i, 0].set_ylabel("Log Density")
@@ -621,17 +636,25 @@ class Figure(object):
             plt.savefig(dest)
             plt.close()
 
-    def _kdeplot(self, ax, key):
+    # def _kdeplot(self, ax, key):
+    #     for i in range(self._m):
+    #         d = self._samples[key][:, i]
+    #
+    #         if numpy.var(d) > 1e-8:
+    #             density = kde.gaussian_kde(d)
+    #             l = numpy.min(d)
+    #             u = numpy.max(d)
+    #             x = numpy.linspace(0, 1, 100) * (u - l) + l
+    #             ax.plot(x, numpy.log(density(x)),
+    #                     color=self._colours[i])
+
+    def _hist(self, ax, key):
         for i in range(self._m):
             d = self._samples[key][:, i]
 
-            if numpy.var(d) > 1e-8:
-                density = kde.gaussian_kde(d)
-                l = numpy.min(d)
-                u = numpy.max(d)
-                x = numpy.linspace(0, 1, 100) * (u - l) + l
-                ax.plot(x, numpy.log(density(x)),
-                        color=self._colours[i])
+            ax.hist(d, bins=len(d) // 10,
+                    histtype="stepfilled", alpha=0.5,
+                    color=self._colours[i], normed=True)
 
     def _plot(self, ax, key):
         for i in range(self._m):

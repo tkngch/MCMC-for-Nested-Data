@@ -35,16 +35,15 @@ def generateData(nGroups, nResponsesPerGroup):
     # generate response variable with noise
     y = numpy.sum(x * beta, axis=1) + numpy.random.normal(size=n)
 
-    print("True value:")
+    trueValueString = "\nTrue value:\n"
     for i in range(beta.shape[1]):
-        print("\tbeta%i: {mean: %.3f, sd: %.3f}"
-              % (i, numpy.mean(beta[:, i]), numpy.std(beta[:, 1])))
-    print("")
+        trueValueString += "\tbeta%i: {mean: %.2f, sd: %.2f}\n"\
+              % (i, numpy.mean(beta[:, i]), numpy.std(beta[:, 1]))
 
     # indicate which row belongs to which group
     group = numpy.repeat(range(nGroups), [nResponsesPerGroup] * nGroups)
 
-    return {"group": group, "X": x, "y": y}
+    return {"group": group, "X": x, "y": y}, trueValueString
 
 
 def computeLogLikelihood(parameter, data):
@@ -85,7 +84,7 @@ def main():
     # generate data and partial apply to the loglikelihood function
     nGroups = 10
     nResponsesPerGroup = 10
-    data = generateData(nGroups, nResponsesPerGroup)
+    data, trueValueString = generateData(nGroups, nResponsesPerGroup)
     objectiveFunction = functools.partial(computeLogLikelihood, data=data)
 
     # run mcmc
@@ -98,6 +97,7 @@ def main():
                     startingPointValueRange=startingPointValueRange,
                     nProcesses=1)
 
+    print(trueValueString)
     diagnoseSamples(outputDirectory)
 
 

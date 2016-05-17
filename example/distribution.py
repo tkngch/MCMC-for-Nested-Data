@@ -19,7 +19,7 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
 
         return ll
 
-    print("True value:")
+    trueValueString = "\nTrue value:\n"
 
     distributions = []
     for i, name in enumerate(parameterName):
@@ -29,9 +29,8 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
         tmp = [scipy.stats.norm(loc=loc, scale=sd) for loc in mu]
         distributions.append(tmp)
 
-        print("\t%s: {mean: %.2f, var: %.2f}"
-              % (name, numpy.mean(mu), numpy.var(mu)))
-    print("")
+        trueValueString += "\t%s: {mean: %.2f, var: %.2f}\n"\
+              % (name, numpy.mean(mu), numpy.var(mu))
 
     groupIndex = [i for i in range(nGroups) for j in range(nResponsesPerGroup)]
 
@@ -41,13 +40,14 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
 
     prior = [scipy.stats.norm(loc=0, scale=1) for name in parameterName]
 
-    return func, prior
+    return func, prior, trueValueString
 
 
 def main():
     nChains = 2
     nIter = 1000
     nSamples = 100
+
     outputDirectory = "./example/sample/distribution/"
 
     parameterName = ("a", "b", "c")
@@ -56,15 +56,17 @@ def main():
     nResponsesPerGroup = 10
     # pooling = "partial"
     pooling = "none"
+    # pooling = "complete"
 
-    objectiveFunction, prior =\
+    objectiveFunction, prior, trueValueString =\
         getFunction(parameterName, nGroups, nResponsesPerGroup)
 
     samplePosterior(nChains, nIter, nSamples,
                     parameterName, nGroups, nResponsesPerGroup,
                     pooling, objectiveFunction,
-                    outputDirectory, priorDistribution=prior, nProcesses=2)
+                    outputDirectory, priorDistribution=prior, nProcesses=1)
 
+    print(trueValueString)
     diagnoseSamples(outputDirectory)
 
 

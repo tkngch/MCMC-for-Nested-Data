@@ -107,8 +107,11 @@ def samplePosterior(nChains, nIter, nSamples,
     sampleDirectory = outputDirectory + "/sample/"
     os.makedirs(sampleDirectory, exist_ok=True)
 
-    logFile = sampleDirectory + "log.txt"
-    logName = "mcmc"
+    logDirectory = outputDirectory + "/log/"
+    os.makedirs(logDirectory, exist_ok=True)
+
+    logFile = logDirectory + "samplePosterior.log"
+    logName = "samplePosterior"
     logger = _getLogger(logFile, logName, loggingLevel)
 
     msg = "MCMC sampling. "
@@ -127,7 +130,7 @@ def samplePosterior(nChains, nIter, nSamples,
                 parameterName, nGroups, nResponsesPerGroup, pooling,
                 logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
                 priorDistribution, startWithMLE, startingPointValueRange,
-                displayProgress, loggingLevel)
+                displayProgress, loggingLevel, logDirectory)
 
     elif nProcesses > 1:
         activeProcesses = []
@@ -140,7 +143,8 @@ def samplePosterior(nChains, nIter, nSamples,
                                     logLikelihoodFunction, sampleDirectory,
                                     saveLogLikelihood, priorDistribution,
                                     startWithMLE, startingPointValueRange,
-                                    _displayProgress, loggingLevel))
+                                    _displayProgress, loggingLevel,
+                                    logDirectory))
             process.start()
             activeProcesses.append(process)
 
@@ -169,14 +173,14 @@ def _sample(chain, nIter, nSamples,
             parameterName, nGroups, nResponsesPerGroup, pooling,
             logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
             priorDistribution, startWithMLE, startingPointValueRange,
-            displayProgress, loggingLevel):
+            displayProgress, loggingLevel, logDirectory):
 
     seed = chain
     mcmc = MCMC(chain, seed, nIter, nSamples,
                 parameterName, nGroups, nResponsesPerGroup, pooling,
                 logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
                 priorDistribution, startWithMLE, startingPointValueRange,
-                displayProgress, loggingLevel)
+                displayProgress, loggingLevel, logDirectory)
     mcmc.run()
 
 
@@ -658,9 +662,9 @@ class CompletePooling(StepMethod):
 
         _nGroups = 1
         if type(nResponsesPerGroup) == int:
-            _nResponsesPerGroup = nResponsesPerGroup * nGroups
+            _nResponsesPerGroup = [nResponsesPerGroup * nGroups]
         elif type(nResponsesPerGroup) == list:
-            _nResponsesPerGroup = sum(nResponsesPerGroup)
+            _nResponsesPerGroup = [sum(nResponsesPerGroup)]
 
         if (priorDistribution is None) or (len(parameterName) != len(priorDistribution)):
             raise ValueError("Invalid prior")
@@ -932,7 +936,7 @@ class MCMC(object):
                  logLikelihoodFunction,
                  sampleDirectory, saveLogLikelihood,
                  priorDistribution, startWithMLE, startingPointValueRange,
-                 displayProgress, loggingLevel):
+                 displayProgress, loggingLevel, logDirectory):
         """
 
         :Arguments:
@@ -990,6 +994,8 @@ class MCMC(object):
 
             - loggingLevel : str
 
+            - logDirectory : str
+
         """
 
         if displayProgress:
@@ -1034,8 +1040,8 @@ class MCMC(object):
         self._saveLogLikelihood = saveLogLikelihood
         self._displayProgress = displayProgress or False
 
-        logFile = sampleDirectory + "/log.%i.txt" % self._chain
-        logName = "chain%i" % self._chain
+        logFile = logDirectory + "/mcmc.chain%.2i.log" % self._chain
+        logName = "mcmc.chain%.2i" % self._chain
         self._logger = _getLogger(logFile, logName, loggingLevel)
         self._findStartingPoint(startWithMLE, startingPointValueRange)
 
