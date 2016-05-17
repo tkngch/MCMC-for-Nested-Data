@@ -5,22 +5,17 @@ import functools
 import numpy
 import scipy.stats
 from posteriorSampling import samplePosterior
-# from diagnosis import diagnose
+from sampleDiagnosis import diagnoseSamples
 numpy.random.seed(12345)
 
 
 def getFunction(parameterName, nGroups, nResponsesPerGroup):
 
-    def _computeLogLikelihood(
-        parameter, nGroups, nResponsesPerGroup, distributions):
-
-        ll = numpy.zeros(nGroups * nResponsesPerGroup)
-        i = 0
-        for j in range(nGroups):
-            for k in range(nResponsesPerGroup):
-                ll[i] = sum([dist[j].logpdf(parameter[n][j])
-                             for n, dist in enumerate(distributions)])
-                i += 1
+    def _computeLogLikelihood(parameter, groupIndex, distributions):
+        ll = numpy.zeros(len(groupIndex))
+        for i, group in enumerate(groupIndex):
+            ll[i] = sum([dist[group].logpdf(parameter[j][i])
+                         for j, dist in enumerate(distributions)])
 
         return ll
 
@@ -28,46 +23,49 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
 
     distributions = []
     for i, name in enumerate(parameterName):
-        scale = numpy.random.random() * 1
-
-        mu = [(i + 1) * scale + j / float(nGroups) for j in range(nGroups)]
-        sd = numpy.sqrt(abs(scale))
+        mu = numpy.random.normal(loc=0, scale=1, size=nGroups)
+        sd = numpy.random.gamma(1)
 
         tmp = [scipy.stats.norm(loc=loc, scale=sd) for loc in mu]
         distributions.append(tmp)
 
-        print("\t%s: {mean: %.2f, scale: %.2f}"
-              % (name, numpy.mean(mu), scale))
+        print("\t%s: {mean: %.2f, var: %.2f}"
+              % (name, numpy.mean(mu), numpy.var(mu)))
     print("")
 
+    groupIndex = [i for i in range(nGroups) for j in range(nResponsesPerGroup)]
+
     func = functools.partial(_computeLogLikelihood,
-                             nGroups=nGroups,
-                             nResponsesPerGroup=nResponsesPerGroup,
+                             groupIndex=groupIndex,
                              distributions=distributions)
 
-    return func
+    prior = [scipy.stats.norm(loc=0, scale=1) for name in parameterName]
+
+    return func, prior
 
 
 def main():
     nChains = 2
-    nIter = 100
+    nIter = 1000
     nSamples = 100
     outputDirectory = "./example/sample/distribution/"
 
-    parameterName = ("a", "b", "c",)
+    parameterName = ("a", "b", "c")
 
     nGroups = 10
     nResponsesPerGroup = 10
-    pooling = "partial"
+    # pooling = "partial"
+    pooling = "none"
 
-    objectiveFunction = getFunction(parameterName, nGroups, nResponsesPerGroup)
+    objectiveFunction, prior =\
+        getFunction(parameterName, nGroups, nResponsesPerGroup)
 
     samplePosterior(nChains, nIter, nSamples,
                     parameterName, nGroups, nResponsesPerGroup,
                     pooling, objectiveFunction,
-                    outputDirectory)
+                    outputDirectory, priorDistribution=prior, nProcesses=2)
 
-    # diagnose(outputdir)
+    diagnoseSamples(outputDirectory)
 
 
 if __name__ == "__main__":

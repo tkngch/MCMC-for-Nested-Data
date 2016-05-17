@@ -9,30 +9,56 @@ from scipy.stats import kde
 import matplotlib.pyplot as plt
 
 
-def _stdout_csv(content):
-    print("\t" + content.replace(",", ", ").replace("\n", "\n\t"))
+def diagnoseSamples(outputDirectory,
+                    assessConvergence=True,
+                    printSummary=True,
+                    plotSamples=True):
 
+    sampleDirectory = outputDirectory + "/sample/"
+    diagnosticDirectory = outputDirectory + "/diagnostic/"
+    os.makedirs(diagnosticDirectory, exist_ok=True)
 
-def _compute_hpd_interval(samples, hdi_p):
-    prob = hdi_p / 100.
-    sorted_samples = numpy.array(sorted(samples))
-    n_samples = len(samples)
-    gap = max(1, min(n_samples - 1, round(n_samples * prob)))
-    init = numpy.array(range(n_samples - gap))
-    tmp = sorted_samples[init + gap] - sorted_samples[init]
-    inds = numpy.where(tmp == min(tmp))[0][0]
-    interval = (sorted_samples[inds], sorted_samples[inds + gap])
+    if assessConvergence:
+        diagnostic = Diagnostic(sampleDirectory)
+        path = diagnosticDirectory + "/diagnosticAssessment.csv"
+        diagnostic.print(path, False, False)
 
-    return interval
+        if diagnostic.partiallyPooled:
+            path = diagnosticDirectory + "/diagnosticAssessmentHyperOnly.csv"
+            diagnostic.print(path, False, True)
+            diagnostic.print(None, False, True)
+
+        path = diagnosticDirectory + "/diagnosticAssessmentIndividual.csv"
+        diagnostic.print(path, True, False)
+        diagnostic.print(None, True, False)
+
+    if printSummary:
+        summary = Summary(sampleDirectory)
+        summary.print(sampleDirectory + "/summary.csv")
+        summary.print(None)
+
+    traceplotDirectory = outputDirectory + "/figure/traceplot/"
+    bivariateDirectory = outputDirectory + "/figure/bivariate/"
+    llFile = outputDirectory + "/figure/logLikelihood.png"
+
+    if plotSamples:
+        for directory in (traceplotDirectory, bivariateDirectory):
+            os.makedirs(directory, exist_ok=True)
+
+        fig = Figure(sampleDirectory)
+        fig.loglikelihood(llFile)
+        nFigures = 10
+        fig.traceplots(traceplotDirectory, nFigures)
+        fig.bivariates(bivariateDirectory, nFigures)
 
 
 class Diagnostic(object):
-    def __init__(self, sampledir):
+    def __init__(self, sampleDirectory):
         """
         Diagnostic class.
 
         This class computes rhat and the effective number of samples and saves
-        them in summary.csv under the same directory as sampledir.
+        them in summary.csv under the same directory as sampleDirectory.
 
         The computation is as defined in Gelman, A., Carlin, J., Stern, H.,
         Dunson, D., Vehtari, A., and Rubin, D. (2013). Bayesian Data Analysis,
@@ -40,8 +66,8 @@ class Diagnostic(object):
 
         """
 
-        sample_files = glob.glob(sampledir + "/sample*.csv")
-        self._organise_samples(sample_files)
+        sampleFiles = glob.glob(sampleDirectory + "/sample*.csv")
+        self._organiseSamples(sampleFiles)
 
         self._B = None
         self._W = None
@@ -49,13 +75,14 @@ class Diagnostic(object):
         self._rho = None
 
         self._rhat = None
-        self._effective_n = None
+        self._effectiveN = None
         self._median = None
         self._hdi = None
-        self._hdi_p = 95
+        self._hdiP = 95
+        self._assessment = None
         self._summary = None
 
-    def _organise_samples(self, sample_files):
+    def _organiseSamples(self, sampleFiles):
         """
 
         This loads up the csv files with MCMC samples, and divide samples from
@@ -64,9 +91,10 @@ class Diagnostic(object):
 
         """
 
-        self._m = len(sample_files) * 2
+        self._m = len(sampleFiles) * 2
         self._samples = {}
-        for i, filename in enumerate(sample_files):
+        self.partiallyPooled = False
+        for i, filename in enumerate(sampleFiles):
             d = pandas.read_csv(filename, engine="python")
 
             if i == 0:
@@ -78,6 +106,9 @@ class Diagnostic(object):
                 if key in ("chain", "index"):
                     continue
 
+                if "_" in key:
+                    self.partiallyPooled = True
+
                 if i == 0:
                     self._samples[key] = numpy.zeros((self._m, self._n))
 
@@ -87,9 +118,9 @@ class Diagnostic(object):
                 self._samples[key][index[key], :] = samples[self._n:n]
                 index[key] += 1
 
-    def _compute_between_sequence_variance(self):
+    def _computeBetweenSequenceVariance(self):
         if self._B is not None:
-            return 0
+            return
 
         self._B = {}
         for key in self._samples:
@@ -97,9 +128,9 @@ class Diagnostic(object):
                                                           axis=1),
                                                ddof=1)
 
-    def _compute_within_sequence_variance(self):
+    def _computeWithinSequenceVariance(self):
         if self._W is not None:
-            return 0
+            return
 
         self._W = {}
         for key in self._samples:
@@ -107,67 +138,67 @@ class Diagnostic(object):
                                                 axis=1,
                                       ddof=1))
 
-    def _compute_marginal_posterior_variance(self):
+    def _computeMarginalPosteriorVariance(self):
         if self._vhat is not None:
-            return 0
+            return
 
         self._vhat = {}
-        self._compute_between_sequence_variance()
-        self._compute_within_sequence_variance()
+        self._computeBetweenSequenceVariance()
+        self._computeWithinSequenceVariance()
         for key in self._samples:
             self._vhat[key] = self._W[key] * (self._n - 1) / self._n + \
                               self._B[key] / self._n
 
-    def _compute_variogram(self, t, key):
+    def _computeVariogram(self, t, key):
         return (sum(sum((self._samples[key][j][i] -
                          self._samples[key][j][i - t]) ** 2
                     for i in range(t, self._n))
                     for j in range(self._m)) /
                 (self._m * (self._n - t)))
 
-    def _compute_autocorrelation(self):
+    def _computeAutocorrelation(self):
         if self._rho is not None:
-            return 0
+            return
 
         self._rho = {}
-        self._compute_marginal_posterior_variance()
+        self._computeMarginalPosteriorVariance()
         for key in self._samples:
             self._rho[key] = numpy.zeros(self._n)
 
             for t in range(self._n):
                 self._rho[key][t] = 1. - \
-                                    self._compute_variogram(t, key) / \
+                                    self._computeVariogram(t, key) / \
                                     (2. * self._vhat[key])
 
     @property
     def rhat(self):
         if self._rhat is None:
-            self._compute_rhat()
+            self._computeRhat()
         return self._rhat
 
-    def _compute_rhat(self):
+    def _computeRhat(self):
         if self._rhat is not None:
-            return 0
+            return
 
         self._rhat = {}
-        self._compute_within_sequence_variance()
-        self._compute_marginal_posterior_variance()
+        self._computeWithinSequenceVariance()
+        self._computeMarginalPosteriorVariance()
         for key in self._samples:
             self._rhat[key] = numpy.sqrt(self._vhat[key] / self._W[key])
 
     @property
-    def effective_n(self):
-        if self._effective_n is None:
-            self._compute_effective_n()
-        return self._effective_n
+    def effectiveN(self):
+        if self._effectiveN is None:
+            self._computeEffectiveN()
+        return self._effectiveN
 
-    def _compute_effective_n(self):
-        if self._effective_n is not None:
-            return 0
+    def _computeEffectiveN(self):
+        if self._effectiveN is not None:
+            return
 
-        self._effective_n = {}
-        self._compute_marginal_posterior_variance()
-        self._compute_autocorrelation()
+        self._effectiveN = {}
+        self._computeMarginalPosteriorVariance()
+        self._computeAutocorrelation()
         for key in self._samples:
 
             fnd = False
@@ -182,9 +213,43 @@ class Diagnostic(object):
             if T is None:
                 T = self._n - 1
 
-            self._effective_n[key] = (self._m * self._n) /\
+            self._effectiveN[key] = (self._m * self._n) /\
                                      (1 + 2 *
                                       numpy.sum(self._rho[key][0:T + 1]))
+
+    @property
+    def assessment(self):
+        if self._assessment is None:
+            self._assess()
+        return self._assessment
+
+    def _assess(self):
+        if self._assessment is not None:
+            return
+
+        self._computeRhat()
+        self._computeEffectiveN()
+        self._computeMedianAndHdi()
+
+        self._assessment =\
+            numpy.array([(key.encode(),
+                          self._rhat[key],
+                          self._rhat[key] < 1.1,
+                          self._effectiveN[key],
+                          self._effectiveN[key] > self._m * 10,
+                          self._median[key],
+                          self._hdi[key][0],
+                          self._hdi[key][1])
+                         for key in self._samples],
+                        dtype=[("parameter", "S40"),
+                               ("rhat", float),
+                               ("converged", bool),
+                               ("effective n", float),
+                               ("enough n", bool),
+                               ("median", float),
+                               ("HDI lower", float),
+                               ("HDI upper", float)])
+        self._assessment = numpy.sort(self._assessment, order="parameter")
 
     @property
     def summary(self):
@@ -194,59 +259,77 @@ class Diagnostic(object):
 
     def _summarise(self):
         if self._summary is not None:
-            return 0
+            return
 
-        self._compute_rhat()
-        self._compute_effective_n()
-        self._compute_median_and_hdi()
+        if self._assessment is None:
+            self._assess()
 
-        self._summary = numpy.array([(key.encode(),
-                                      self._rhat[key], self._rhat[key] < 1.1,
-                                      self._effective_n[key],
-                                      self._effective_n[key] > self._m * 10,
-                                      self._median[key],
-                                      self._hdi[key][0],
-                                      self._hdi[key][1])
-                                     for key in self._samples],
+        parameterNames = [name.decode("ascii").split("[")[0]
+                          for name in self._assessment["parameter"]
+                          if b"[" in name]
+        parameterNames = sorted(list(set(parameterNames)))
+        rhats = dict((name, []) for name in parameterNames)
+        converged = dict((name, []) for name in parameterNames)
+
+        for row in self._assessment:
+            if b"[" not in row[0]:
+                continue
+
+            name = row[0].decode("ascii").split("[")[0]
+            rhats[name].append(row[1])
+            converged[name].append(row[2])
+
+        rhatsHDI = dict((name, _computeHpdInterval(rhats[name], 0.95))
+                        for name in parameterNames)
+
+        self._summary = numpy.array([(name,
+                                      numpy.median(rhats[name]),
+                                      rhatsHDI[name][0],
+                                      rhatsHDI[name][1],
+                                      numpy.mean(converged[name]))
+                                     for name in parameterNames],
                                     dtype=[("parameter", "S40"),
-                                           ("rhat", float),
-                                           ("converged", bool),
-                                           ("effective_n", float),
-                                           ("enough n", bool),
-                                           ("median", float),
-                                           ("HDI lower", float),
-                                           ("HDI upper", float)])
-        self._summary = numpy.sort(self._summary, order="parameter")
+                                           ("rhat median", float),
+                                           ("rhat lower", float),
+                                           ("rhat upper", float),
+                                           ("proportion converged", float)])
 
-    def print(self, csvfile=None, hyperonly=False):
+    def print(self, csvfile, individualSummary, hyperOnly):
         """
         Print out summary onto either csvfile or stdout.
 
         :Arguments:
 
-            - csvfile (optional) : str, default = None
+            - csvfile : str
                 The file name with the path to store the sample summary. When
                 None, the summary is printed on stdout.
 
-            - hyperonly (optional) : bool, default = False
-                When True, the summary for only the hyper-parameters is
-                printed.
+            - individualSummary : bool
+                Whether to print summary statistics (e.g., rhat, converged)
+                aggregated across groups.
+
+            - hyperOnly : bool
+                When True and samples are from partially pooled MCMC, the
+                summary for only the hyper-parameters is printed.
 
         """
-        self._summarise()
+        if hyperOnly and not self.partiallyPooled:
+            raise ValueError(
+                "MCMC was not partially pooled. There is no hyper-parameter.")
 
-        if csvfile is None:
-            print("MCMC convergence diagnostic.")
+        if individualSummary and hyperOnly:
+            raise ValueError(
+                "Choose individualSummary or hyperOnly. Not both.")
 
-        out = ",".join([key for key in self._summary.dtype.names])
-        out += "\n"
-        for row in self._summary:
-            if hyperonly and (b"_" not in row[0]):
-                continue
+        if (csvfile is None) and hyperOnly:
+            print("MCMC convergence diagnostic for hyper-parameters.")
+        if (csvfile is None) and individualSummary:
+            print("MCMC convergence diagnostic for individual parameters.")
 
-            out += "'%s',%.3f,%s,%.3f,%s,%.3f,%.3f,%.3f\n" % \
-                   (row[0].decode("ascii"), row[1], row[2], row[3],
-                    row[4], row[5], row[6], row[7])
+        if not individualSummary:
+            out = self._getAssessmentString(hyperOnly)
+        else:
+            out = self._getSummaryString()
 
         if csvfile is None:
             _stdout_csv(out)
@@ -255,51 +338,77 @@ class Diagnostic(object):
             with open(csvfile, "w") as h:
                 h.write(out)
 
+    def _getAssessmentString(self, hyperOnly):
+        self._assess()
+
+        out = ",".join([key for key in self._assessment.dtype.names])
+        out += "\n"
+        for row in self._assessment:
+            if hyperOnly and (b"_" not in row[0]):
+                continue
+
+            out += "'%s',%.3f,%s,%.3f,%s,%.3f,%.3f,%.3f\n" % \
+                   (row[0].decode("ascii"), row[1], row[2], row[3],
+                    row[4], row[5], row[6], row[7])
+
+        return out
+
+    def _getSummaryString(self):
+        self._summarise()
+
+        out = ",".join([key for key in self._summary.dtype.names])
+        out += "\n"
+        for row in self._summary:
+            out += "'%s',%.3f,%.3f,%.3f,%.3f\n" % \
+                   (row[0].decode("ascii"), row[1], row[2], row[3], row[4])
+
+        return out
+
     @property
     def median(self):
         if self._median is None:
-            self._compute_median_and_hdi()
+            self._computeMedianAndHdi()
         return self._median
 
     @property
     def hdi(self):
         if self._hdi is None:
-            self._compute_median_and_hdi()
+            self._computeMedianAndHdi()
         return self._hdi
 
-    def _compute_median_and_hdi(self):
+    def _computeMedianAndHdi(self):
         if self._median is not None and self._hdi is not None:
-            return 0
+            return
 
         self._median, self._hdi = {}, {}
         for key in self._samples:
             samples = self._samples[key].flatten()
             self._median[key] = numpy.median(samples)
-            self._hdi[key] = _compute_hpd_interval(samples, self._hdi_p)
+            self._hdi[key] = _computeHpdInterval(samples, self._hdiP)
 
 
 class Summary(object):
     """
     Summarise individual parameter values.
     """
-    def __init__(self, sampledir):
+    def __init__(self, sampleDirectory):
         """
         :Arguments:
 
-            - sampledir : str
+            - sampleDirectory : str
                 A path to the directory where sample csv files are stored.
 
         """
-        self._load_samples(sampledir)
+        self._loadSamples(sampleDirectory)
         self._summarise()
 
-    def _load_samples(self, sampledir):
-        sample_files = glob.glob(sampledir + "/sample*.csv")
+    def _loadSamples(self, sampleDirectory):
+        sampleFiles = glob.glob(sampleDirectory + "/sample*.csv")
 
         self._mean = {}
         self._median = {}
 
-        for i, filename in enumerate(sample_files):
+        for i, filename in enumerate(sampleFiles):
             d = pandas.read_csv(filename, engine="python")
 
             if i == 0:
@@ -326,14 +435,14 @@ class Summary(object):
         for s, d in zip(("mean", "median"), (self._mean, self._median)):
             for name in sorted(d):
                 m = numpy.mean(d[name])
-                hdi = _compute_hpd_interval(d[name], 95.)
+                hdi = _computeHpdInterval(d[name], 95.)
 
                 self._summary += "%s,%s,%.4f,%.4f,%.4f\n"\
                     % (s, name, m, hdi[0], hdi[1])
 
-    def print(self, csvfile=None):
+    def print(self, csvfile):
         if csvfile is None:
-            print("Summary of individual parameters")
+            print("Summary of individual parameters.")
             _stdout_csv(self._summary)
         else:
             with open(csvfile, "w") as h:
@@ -341,38 +450,43 @@ class Summary(object):
 
 
 class Figure(object):
-    def __init__(self, sampledir):
+    def __init__(self, sampleDirectory):
         """
         Figure class to assess mixing and convergence of MCMC chains.
 
         :Arguments:
 
-            - sampledir : str
+            - sampleDirectory : str
                 A path to the directory where sample csv files are stored.
 
         """
 
         plt.close("all")
 
-        self._load_samples(sampledir)
-        self._load_summary(sampledir)
-        self._load_loglikelihoods(sampledir)
+        self._loadSamples(sampleDirectory)
+        self._loadSummary(sampleDirectory)
+        self._loadLogLikelihoods(sampleDirectory)
 
         suffices = numpy.unique(["[" + name.split("[")[1]
                                  for name in self._keys if "[" in name])
-        self._key_suffices = numpy.hstack([["_"], suffices])
+
+        partiallyPooled = any(["_" in name for name in self._keys])
+        if partiallyPooled:
+            self._keySuffices = numpy.hstack([["_"], suffices])
+        else:
+            self._keySuffices = suffices
 
         self._colours = numpy.array(["blue", "red", "green", "magenta",
                                      "cyan", "yellow", "black"])[:self._m]
 
-    def _load_samples(self, sampledir):
-        sample_files = glob.glob(sampledir + "/sample*.csv")
+    def _loadSamples(self, sampleDirectory):
+        sampleFiles = glob.glob(sampleDirectory + "/sample*.csv")
 
-        self._m = len(sample_files)
+        self._m = len(sampleFiles)
         self._samples = {}
         self._value_range = {}
 
-        for i, filename in enumerate(sample_files):
+        for i, filename in enumerate(sampleFiles):
             d = pandas.read_csv(filename, engine="python")
 
             if i == 0:
@@ -386,19 +500,22 @@ class Figure(object):
 
                 self._samples[key][:, i] = d[key].tolist()
 
-    def _load_summary(self, sampledir):
-        self._summary = pandas.read_csv(sampledir + "/summary.csv",
-                                        quotechar="'")
+    def _loadSummary(self, sampleDirectory):
+        path = sampleDirectory + "../diagnostic/diagnosticAssessment.csv"
+        if os.path.exists(path):
+            self._diagnosticAssessment = pandas.read_csv(path, quotechar="'")
+        else:
+            self._diagnosticAssessment = None
 
-    def _load_loglikelihoods(self, sampledir):
-        loglikelihood_files = glob.glob(sampledir + "/log_likelihood*.csv")
+    def _loadLogLikelihoods(self, sampleDirectory):
+        logLikelihoodFiles = glob.glob(sampleDirectory + "/logLikelihood*.csv")
 
-        if len(loglikelihood_files) == 0:
+        if len(logLikelihoodFiles) == 0:
             self._loglikelihoods = None
             return
 
         size = sum([os.path.getsize(filename)
-                    for filename in loglikelihood_files])
+                    for filename in logLikelihoodFiles])
         if size == 0:
             self._loglikelihoods = None
             return
@@ -407,10 +524,10 @@ class Figure(object):
         loglikelihoods = [pandas.read_csv(
                             filename, header=None, engine="python"
                           ).sum(axis=1)
-                          for filename in loglikelihood_files]
+                          for filename in logLikelihoodFiles]
         self._loglikelihoods = pandas.concat(loglikelihoods, axis=1)
 
-    def loglikelihood(self, dest=None):
+    def loglikelihood(self, dest):
         if self._loglikelihoods is None:
             return
         print("Creating loglikelihood plot", end="")
@@ -433,7 +550,7 @@ class Figure(object):
 
         print(": Done")
 
-    def traceplots(self, dest, n=30):
+    def traceplots(self, dest, n):
         """
         Creates traceplots. Useful for assessing mixing and convergence.
 
@@ -447,15 +564,15 @@ class Figure(object):
 
         """
 
-        for i, key_suffix in enumerate(self._key_suffices[:n]):
+        for i, keySuffix in enumerate(self._keySuffices[:n]):
 
             progress = "Creating traceplots: %i out of %i" % (i + 1, n)
             if i != 0:
                 print("\r" * len(progress), end="")
             print(progress, end="")
 
-            plotname = dest + "/traceplot%s.png" % key_suffix
-            keys = sorted([key for key in self._keys if key_suffix in key])
+            plotname = dest + "/traceplot%s.png" % keySuffix
+            keys = sorted([key for key in self._keys if keySuffix in key])
             self.traceplot(keys, plotname)
 
         print("\r" * len(progress), end="")
@@ -463,7 +580,7 @@ class Figure(object):
         print("\r" * len(progress), end="")
         print("Creating traceplots: Done.")
 
-    def traceplot(self, keys=None, dest=None):
+    def traceplot(self, keys, dest):
         """
         Creates one traceplot.
         """
@@ -479,10 +596,12 @@ class Figure(object):
             ax = numpy.matrix([ax[0], ax[1]])
 
         for i, key in enumerate(keys):
-            rhat = self._summary[self._summary["parameter"] == key]["rhat"]
-
             title = key.replace("_", " ")
-            title += " (rhat=%.3f)" % float(rhat)
+
+            if self._diagnosticAssessment is not None:
+                index = self._diagnosticAssessment["parameter"] == key
+                rhat = self._diagnosticAssessment[index]["rhat"]
+                title += " (rhat=%.3f)" % float(rhat)
 
             self._kdeplot(ax[i, 0], key)
             ax[i, 0].set_title(title)
@@ -518,7 +637,7 @@ class Figure(object):
         for i in range(self._m):
             ax.plot(self._samples[key][:, i], color=self._colours[i])
 
-    def bivariates(self, dest, n=30):
+    def bivariates(self, dest, n):
         """
 
         Creates bivariate plots of samples. Useful for assessing pairwise
@@ -534,15 +653,15 @@ class Figure(object):
 
         """
 
-        for i, key_suffix in enumerate(self._key_suffices[:n]):
+        for i, keySuffix in enumerate(self._keySuffices[:n]):
 
             progress = "Creating bivariate plots: %i out of %i" % (i + 1, n)
             if i != 0:
                 print("\r" * len(progress), end="")
             print(progress, end="")
 
-            plotname = dest + "/bivariate%s.png" % key_suffix
-            keys = sorted([key for key in self._keys if key_suffix in key])
+            plotname = dest + "/bivariate%s.png" % keySuffix
+            keys = sorted([key for key in self._keys if keySuffix in key])
             self.bivariate(keys, plotname)
 
         print("\r" * len(progress), end="")
@@ -550,7 +669,7 @@ class Figure(object):
         print("\r" * len(progress), end="")
         print("Creating bivariate plots: Done.")
 
-    def bivariate(self, keys=None, dest=None):
+    def bivariate(self, keys, dest):
         """
         Create one bivariate plot.
         """
@@ -590,25 +709,18 @@ class Figure(object):
             plt.close()
 
 
-def diagnose(outputdir):
-    sampledir = outputdir + "/sample/"
-    traceplotdir = outputdir + "/figure/traceplot/"
-    bivariatedir = outputdir + "/figure/bivariate/"
-    ll_file = outputdir + "/figure/log_likelihood.png"
+def _stdout_csv(content):
+    print("\t" + content.replace(",", ", ").replace("\n", "\n\t"))
 
-    for directory in (traceplotdir, bivariatedir):
-        os.makedirs(directory, exist_ok=True)
 
-    diagnostic = Diagnostic(sampledir)
-    diagnostic.print(sampledir + "/summary.csv")
-    diagnostic.print(sampledir + "/summary_hyperonly.csv", hyperonly=True)
-    diagnostic.print(hyperonly=True)
+def _computeHpdInterval(samples, hdi_p):
+    prob = hdi_p / 100.
+    sorted_samples = numpy.array(sorted(samples))
+    n_samples = len(samples)
+    gap = max(1, min(n_samples - 1, round(n_samples * prob)))
+    init = numpy.array(range(n_samples - gap))
+    tmp = sorted_samples[init + gap] - sorted_samples[init]
+    inds = numpy.where(tmp == min(tmp))[0][0]
+    interval = (sorted_samples[inds], sorted_samples[inds + gap])
 
-    summary = Summary(sampledir)
-    summary.print(sampledir + "/individual_summary.csv")
-    summary.print()
-
-    fig = Figure(sampledir)
-    fig.loglikelihood(ll_file)
-    fig.traceplots(traceplotdir)
-    fig.bivariates(bivariatedir)
+    return interval
