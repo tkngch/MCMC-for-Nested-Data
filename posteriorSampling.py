@@ -11,6 +11,7 @@ posterior distribution with partial-, complete- or no-pooling method.
 
 """
 
+import abc
 import datetime
 import logging
 import multiprocessing
@@ -24,10 +25,159 @@ import scipy.stats
 import scipy.optimize
 
 
-# ---------------- #
-# global variables #
-# ---------------- #
-DATETIMEFMT = "%Y/%m/%d %H:%M:%S"
+def samplePosterior(nChains, nIter, nSamples,
+                    parameterName, nGroups, nResponsesPerGroup,
+                    pooling, logLikelihoodFunction,
+                    outputDirectory,
+                    saveLogLikelihood=True,
+                    priorDistribution=None,
+                    startWithMLE=False, startingPointValueRange=None,
+                    nProcesses=1, displayProgress=True, loggingLevel="info"):
+    """
+
+    :Arguments:
+
+        - nChains : int
+
+        - nIter : int
+            Number of iterations per chain
+
+        - nSamples : int
+            Number of retained samples per chain
+
+        - parameterName : tuple of str
+            e.g., ("alpha", "beta")
+
+        - nGroups : int
+
+        - nResponsesPerGroup : int or list of int
+
+        - pooling : str
+            "partial" for hierarchical Bayes. Alternatively, "complete", or
+            "none".
+
+        - logLikelihoodFunction : def
+            see doc string for HierarchicalBayes
+
+        - outputDirectory : str
+            Full path specifying where to save MCMC samples.
+
+        - startingPointValueRange : dict
+
+            The parameter range to initialize a starting point. This is
+            ignored during MCMC sampling.
+
+            e.g., {"alpha": [0, 1], "beta": [2, 5]}
+
+        - saveLogLikelihood (optional) : bool, defalt = True
+            Whether to save loglikelihood when saving samples. Saved
+            loglikelihood can be used to compute waic or loo with loo package
+            in R.
+
+        - priorDistribution (optional) : tuple of scipy.stats distributions
+            Required for complete and no pooling. Ignored for partial pooling.
+
+        - startWithMLE (optional) : bool, default = True
+            Whether to start a chain with maximum likelihood estimation.
+            This estimation pools groups and uses Nelder-Mead method.
+
+        - startingPointValueRange (optional) : dict of list, default = None
+            The parameter value range to initialize a starting point. This is
+            ignored during posterior sampling. If None, the range is set at
+            [-100, 100] for all the parameters.  e.g., {"alpha": [0, 1],
+            "beta": [2, 5]}
+
+        - nProcesses (optional) : int, default = 1
+            How many processes to launch. If 1 (default), multiprocessing is
+            not triggered. If zero, all the available cores are used.
+
+        - displayProgress (optional) : bool, default = True
+            Whether to display progress.
+
+        - loggingLevel (optional) : str, default = "info"
+            "error", "warning", "info", or "debug"
+
+    """
+
+    startTime = datetime.datetime.now()
+
+    if os.path.exists(outputDirectory):
+        shutil.rmtree(outputDirectory)
+
+    sampleDirectory = outputDirectory + "/sample/"
+    os.makedirs(sampleDirectory, exist_ok=True)
+
+    logFile = sampleDirectory + "log.txt"
+    logName = "mcmc"
+    logger = _getLogger(logFile, logName, loggingLevel)
+
+    msg = "MCMC sampling. "
+    msg += "nChains: %i, nIterPerChain: %i, nSamplesPerChain: %i."\
+        %(nChains, nIter, nSamples)
+    logger.info(msg)
+    if displayProgress:
+        print(msg)
+
+    if nProcesses <= 0:
+        nProcesses = min(nChains, multiprocessing.cpu_count())
+
+    if nProcesses == 1:
+        for chain in range(nChains):
+            _sample(chain, nIter, nSamples,
+                parameterName, nGroups, nResponsesPerGroup, pooling,
+                logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
+                priorDistribution, startWithMLE, startingPointValueRange,
+                displayProgress, loggingLevel)
+
+    elif nProcesses > 1:
+        activeProcesses = []
+        for chain in range(nChains):
+            _displayProgress = displayProgress and (len(activeProcesses) == 0)
+            process = Process(target=_sample,
+                              args=(chain, nIter, nSamples,
+                                    parameterName, nGroups,
+                                    nResponsesPerGroup, pooling,
+                                    logLikelihoodFunction, sampleDirectory,
+                                    saveLogLikelihood, priorDistribution,
+                                    startWithMLE, startingPointValueRange,
+                                    _displayProgress, loggingLevel))
+            process.start()
+            activeProcesses.append(process)
+
+            if len(activeProcesses) % nProcesses == 0:
+                for activeProcess in activeProcesses:
+                    activeProcess.join()
+                activeProcesses.clear()
+
+    else:
+        print("Invalid number of processes: ", n_processes)
+        print("Exiting.")
+        sys.exit()
+
+    endTime = datetime.datetime.now()
+    elapsed = endTime - startTime
+    msg = "Finished. The elapsed time in total is %s."\
+        % datetime.timedelta(seconds=int(elapsed.total_seconds()))
+
+    logger.info(msg)
+    if displayProgress:
+        print("")
+        _printProgress(msg)
+
+
+def _sample(chain, nIter, nSamples,
+            parameterName, nGroups, nResponsesPerGroup, pooling,
+            logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
+            priorDistribution, startWithMLE, startingPointValueRange,
+            displayProgress, loggingLevel):
+
+    seed = chain
+    mcmc = MCMC(chain, seed, nIter, nSamples,
+                parameterName, nGroups, nResponsesPerGroup, pooling,
+                logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
+                priorDistribution, startWithMLE, startingPointValueRange,
+                displayProgress, loggingLevel)
+    mcmc.run()
 
 
 # ---------------------------- #
@@ -35,7 +185,7 @@ DATETIMEFMT = "%Y/%m/%d %H:%M:%S"
 # ---------------------------- #
 
 class Parameter(object):
-    def __init__(self, parameterName, index, prior, proposalSd, logger):
+    def __init__(self, parameterName, index, value, prior, proposalSd, logger):
         """
 
         Parameter class defines, well, parameter. Users are not expected to
@@ -49,6 +199,10 @@ class Parameter(object):
                 This is used as a group index, and the unique name of the
                 parameter is set to "%s[%.3i]" % (parameterName, index).
 
+            - value : double
+                Initial value of parameter. If None, a random sample from prior
+                is taken.
+
             - prior : scipy.stats distribution
 
             - proposalSd : double
@@ -60,7 +214,7 @@ class Parameter(object):
         self._logger = logger
         self._parameterName = parameterName
         self._uniqueName = "%s[%.3i]" % (parameterName, index)
-        self._value = None
+        self._value = value
         self._logLikelihood = numpy.nan
         self.setPrior(prior)
 
@@ -310,16 +464,12 @@ class HyperParameter(object):
         return [self._value[name] for name in self._hyperParameterName]
 
 
-class CompletePooling(object):
-    pass
+class StepMethod(object):
+    __metaclass__ = abc.ABCMeta
 
-class NoPooling(object):
-    pass
-
-class PartialPooling(object):
     def __init__(self, parameterName, startingPoint,
-                 nGroups, nResponsesPerGroup,
-                 logLikelihoodFunction, logger):
+                 nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                 priorDistribution, logger):
         """
         This class defines the step method for hierarchical Bayes.
 
@@ -338,7 +488,7 @@ class PartialPooling(object):
 
             - nGroups : int
 
-            - nResponsesPerGroup : int or list of int
+            - nResponsesPerGroup : list of int
 
             - logLikelihoodFunction : def
 
@@ -349,15 +499,29 @@ class PartialPooling(object):
                 (functools.partial).
 
                 The list of parameter values is organized as:
-                    [[0.7, 0.2, ..., 0.3],
-                     # nGroups values of the first parameter
-                     [4.3, 3.6, ..., 2.9],
-                     # nGroups values of the second parameter
-                     ...].
+                    [[the first parameter for the first group,
+                      the first parameter for the first group,
+                      ...
+                      the first parameter for the first group,
+                      the first parameter for the second group,
+                      ...
+                      the first parameter for the last group],
+                     [the second parameter for the first group,
+                      the second parameter for the first group,
+                      ...
+                      the second parameter for the first group,
+                      the second parameter for the second group,
+                      ...
+                      the second parameter for the last group],
+                     ...
+                    ]
 
-                The order of parameters is as in the parameterName argument
-                above (e.g., if parameterName = ("alpha", "beta"), the first
-                parameter is alpha, the second is beta).
+                The parameter values for each group are repeated according to
+                nResponsesPerGroup.
+
+                Also, the order of parameters is as in the parameterName
+                argument above (e.g., if parameterName = ("alpha", "beta"), the
+                first parameter is alpha, the second is beta).
 
                 The output value should be:
                     [ll for the first group's first response,
@@ -371,35 +535,178 @@ class PartialPooling(object):
                      ll for the third group's first response,
                      ...]
 
+            - priorDistribution (optional) : tuple of scipy.stats distributions
+
             - logger
         """
-
+        self._parameterName = parameterName
+        self._nGroups = nGroups
+        self._priorDistribution = priorDistribution
         self._logger = logger
 
-        self._parameterName = parameterName
+        self._nResponses = sum(nResponsesPerGroup)
 
-        self._nGroups = nGroups
+        self._groupSwitchPoint = numpy.hstack([0, numpy.cumsum(nResponsesPerGroup)])
+        self._groupIndex = [0] * self._nResponses
+        group = 0
+        for i in range(self._nResponses):
+            while True:
+                if (
+                        (self._groupSwitchPoint[group] <= i) and
+                        (i < self._groupSwitchPoint[group + 1])
+                ):
+                    break
+                else:
+                    group += 1
 
-        if type(nResponsesPerGroup) == int:
-            self._nResponsesPerGroup = [nResponsesPerGroup] * nGroups
-        elif type(nResponsesPerGroup) == list:
-            self._nResponsesPerGroup = nResponsesPerGroup
+                if self._nGroups <= group:
+                    raise Exception()
 
+            self._groupIndex[i] = group
+        self._logger.debug("groupSwitchPoint: %s" % self._groupSwitchPoint.__str__())
+        self._logger.debug("groupIndex: %s" % self._groupIndex.__str__())
+
+        self._parameterForLlFunction = [[0] * self._nResponses] * len(self._parameterName)
         self._logLikelihoodFunction = logLikelihoodFunction
 
-        self._llIndex = numpy.hstack(
-            [0, numpy.cumsum(self._nResponsesPerGroup)])
-        assert(len(self._llIndex) == self._nGroups + 1)
-
         assert(len(parameterName) == len(startingPoint))
+        self._parameter = {}
+        self._setStartingPoint(startingPoint)
+
+    def _setStartingPoint(self, startingPoint):
+        for i, name in enumerate(self._parameterName):
+            proposalSd = 1.
+            prior = self._priorDistribution[name]
+            value = startingPoint[i]
+
+            self._parameter[name] =\
+                [Parameter(name, j, value, prior, proposalSd, self._logger)
+                 for j in range(self._nGroups)]
+
+    def step(self, tune):
+        for name in self._parameterName:
+            self._stepOneParameter(name, tune)
+            self._stepHyperParameter(name)
+
+    def _stepOneParameter(self, name, tune):
+        for i in range(self._nGroups):
+            self._parameter[name][i].propose()
+
+        llarray = self._computeParameterLogLikelihood(name)
+
+        for i, ll in enumerate(llarray):
+            accepted = self._parameter[name][i].step(ll)
+
+            if accepted:
+                for name_ in self._parameterName:
+                    self._parameter[name_][i].logLikelihood = ll
+
+            if tune:
+                self._parameter[name][i].tune()
+
+    def _computeLogLikelihood(self, proposedParameter):
+        for i, name in enumerate(self._parameterName):
+            if name == proposedParameter:
+                self._parameterForLlFunction[i] =\
+                    [self._parameter[name][j].proposal
+                     for j in self._groupIndex]
+            else:
+                self._parameterForLlFunction[i] =\
+                    [self._parameter[name][j].value for j in self._groupIndex]
+
+        ll = self._logLikelihoodFunction(self._parameterForLlFunction)
+        assert(len(ll) == self._nResponses)
+        return ll
+
+    def _computeParameterLogLikelihood(self, proposedParameter):
+        ll = self._computeLogLikelihood(proposedParameter)
+        groupLL = [
+            sum(ll[self._groupSwitchPoint[i]:self._groupSwitchPoint[i + 1]])
+            for i in range(self._nGroups)]
+
+        return groupLL
+
+    def _stepHyperParameter(self, name):
+        pass
+
+    @property
+    def header(self):
+        header = []
+        for name in self._parameterName:
+            for parameter in self._parameter[name]:
+                header.append(parameter.header)
+        return header
+
+    @property
+    def values(self):
+        values = []
+        for name in self._parameterName:
+            for parameter in self._parameter[name]:
+                values.append(parameter.value)
+        return values
+
+    @property
+    def logLikelihood(self):
+        proposedParameter = None
+        return self._computeLogLikelihood(proposedParameter)
+
+
+class CompletePooling(StepMethod):
+    def __init__(self, parameterName, startingPoint,
+                 nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                 priorDistribution, logger):
+
+        _nGroups = 1
+        if type(nResponsesPerGroup) == int:
+            _nResponsesPerGroup = nResponsesPerGroup * nGroups
+        elif type(nResponsesPerGroup) == list:
+            _nResponsesPerGroup = sum(nResponsesPerGroup)
+
+        if (priorDistribution is None) or (len(parameterName) != len(priorDistribution)):
+            raise ValueError("Invalid prior")
+
+        _priorDistribution = dict((key, dist)
+            for key, dist in zip(parameterName, priorDistribution))
+
+        super().__init__(parameterName, startingPoint,
+                         _nGroups, _nResponsesPerGroup, logLikelihoodFunction,
+                         _priorDistribution, logger)
+
+
+class NoPooling(StepMethod):
+    def __init__(self, parameterName, startingPoint,
+                 nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                 priorDistribution, logger):
+
+        if (priorDistribution is None) or (len(parameterName) != len(priorDistribution)):
+            raise ValueError("Invalid prior")
+
+        _priorDistribution = dict((key, dist)
+            for key, dist in zip(parameterName, priorDistribution))
+
+        super().__init__(parameterName, startingPoint,
+                         nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                         _priorDistribution, logger)
+
+
+class PartialPooling(StepMethod):
+    def __init__(self, parameterName, startingPoint,
+                 nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                 priorDistribution, logger):
+
+        if priorDistribution is not None:
+            logger.info("Partial pooling ignores prior distribution.")
+        _priorDistribution = None
+
+        super().__init__(parameterName, startingPoint,
+                         nGroups, nResponsesPerGroup, logLikelihoodFunction,
+                         _priorDistribution, logger)
+
+    def _setStartingPoint(self, startingPoint):
         self._initialiseParameters(startingPoint)
         self._determineIndividualStartingPoint()
 
-        self._logger = logger
-
     def _initialiseParameters(self, startingPoint):
-        self._parameter = {}
-
         for i, name in enumerate(self._parameterName):
             val = startingPoint[i]
 
@@ -415,15 +722,17 @@ class PartialPooling(object):
 
             prior = self._getParameterPrior(name)
             proposalSd = 1.
-            self._parameter[name] = [Parameter(name, j, prior, proposalSd,
-                                               self._logger)
-                                     for j in range(self._nGroups)]
+            value = None
+            self._parameter[name] =\
+                [Parameter(name, j, value, prior, proposalSd, self._logger)
+                 for j in range(self._nGroups)]
 
     def _determineIndividualStartingPoint(self):
         ll = [-1 * float("inf")] * self._nGroups
 
+        proposedParameter = None
         while not all(numpy.isfinite(ll)):
-            ll = self._computeParameterLogLikelihood()
+            ll = self._computeParameterLogLikelihood(proposedParameter)
 
             for name in self._parameterName:
                 for i in range(self._nGroups):
@@ -435,45 +744,14 @@ class PartialPooling(object):
     def _getParameterPrior(self, name):
         return self._parameter[name + "_hyper"].get_distribution()
 
-    def step(self, tune):
-        for name in self._parameterName:
+    def _stepHyperParameter(self, name):
+        values = [self._parameter[name][i].value
+                    for i in range(self._nGroups)]
+        self._parameter[name + "_hyper"].update(values)
 
-            for i in range(self._nGroups):
-                self._parameter[name][i].propose()
-
-            llarray = self._computeParameterLogLikelihood(
-                proposed_parameter=name)
-
-            for i, ll in enumerate(llarray):
-                accepted = self._parameter[name][i].step(ll)
-
-                if accepted:
-                    for name_ in self._parameterName:
-                        self._parameter[name_][i].logLikelihood = ll
-
-                if tune:
-                    self._parameter[name][i].tune()
-
-            values = [self._parameter[name][i].value
-                      for i in range(self._nGroups)]
-            self._parameter[name + "_hyper"].update(values)
-
-            prior = self._getParameterPrior(name)
-            for i in range(self._nGroups):
-                self._parameter[name][i].setPrior(prior)
-
-    def _computeParameterLogLikelihood(self, proposed_parameter=None):
-        x = [[0] * self._nGroups] * len(self._parameterName)
-        for i, name in enumerate(self._parameterName):
-            if name == proposed_parameter:
-                x[i] = [p.proposal for p in self._parameter[name]]
-            else:
-                x[i] = [p.value for p in self._parameter[name]]
-
-        ll = self._logLikelihoodFunction(x)
-
-        return [sum(ll[self._llIndex[i]:self._llIndex[i + 1]])
-                for i in range(self._nGroups)]
+        prior = self._getParameterPrior(name)
+        for i in range(self._nGroups):
+            self._parameter[name][i].setPrior(prior)
 
     @property
     def header(self):
@@ -493,14 +771,6 @@ class PartialPooling(object):
                 values.append(parameter.value)
         return values
 
-    @property
-    def logLikelihood(self):
-        parameter_values = [[p.value for p in self._parameter[name]]
-                            for name in self._parameterName]
-        ll = self._logLikelihoodFunction(parameter_values)
-
-        return ll
-
 
 class Sampler(object):
     def __init__(self, stepMethod, chain, sampleFile, llFile,
@@ -515,7 +785,7 @@ class Sampler(object):
 
         :Arguments:
 
-            - stepMethod : PartialPooling, NoPooling, or CompletePooling
+            - stepMethod : StepMethod class object
 
             - sampleDirectory : str
                 Where to save posterior samples. When it is None, samples are
@@ -636,8 +906,7 @@ class Sampler(object):
             percentage = float(i) / self._iter
             remain = (1 - percentage) * (now - self._startTime) / percentage
             msg = "%i%% complete. ETA: %s."\
-                % (percentage * 100,
-                   str((now + remain).strftime(DATETIMEFMT)))
+                % (percentage * 100, str(_getStrfTime(now + remain)))
 
         self._printProgress(msg)
 
@@ -662,7 +931,7 @@ class MCMC(object):
                  parameterName, nGroups, nResponsesPerGroup, pooling,
                  logLikelihoodFunction,
                  sampleDirectory, saveLogLikelihood,
-                 startWithMLE, startingPointValueRange,
+                 priorDistribution, startWithMLE, startingPointValueRange,
                  displayProgress, loggingLevel):
         """
 
@@ -702,6 +971,10 @@ class MCMC(object):
                 loglikelihood can be used to compute waic or loo with loo
                 package in R.
 
+            - priorDistribution (optional) : tuple of scipy.stats distributions
+                Required for complete and no pooling. Ignored for partial
+                pooling.
+
             - startWithMLE : bool, default = True
                 Whether to start a chain with maximum likelihood estimation.
                 This estimation pools groups and uses Nelder-Mead method.
@@ -740,7 +1013,12 @@ class MCMC(object):
 
         self._parameterName = parameterName
         self._nGroups = nGroups
-        self._nResponsesPerGroup = nResponsesPerGroup
+
+        if type(nResponsesPerGroup) == int:
+            self._nResponsesPerGroup = [nResponsesPerGroup] * nGroups
+        elif type(nResponsesPerGroup) == list:
+            self._nResponsesPerGroup = nResponsesPerGroup
+        self._nResponses = sum(self._nResponsesPerGroup)
 
         if pooling in ("partial", "none", "complete"):
             self._pooling = pooling
@@ -748,6 +1026,7 @@ class MCMC(object):
             raise Exception("Invalid pooling: ", pooling)
 
         self._logLikelihoodFunction = logLikelihoodFunction
+        self._priorDistribution = priorDistribution
 
         self._sampleFile = sampleDirectory + "/sample.%i.csv" % self._chain
         self._llFile = sampleDirectory + "/logLikelihood.%i.csv" % self._chain
@@ -793,7 +1072,7 @@ class MCMC(object):
             _printProgress(msg)
 
     def _mleObjectiveFunction(self, x):
-        param = [[p for i in range(self._nGroups)] for p in x]
+        param = [[p for i in range(self._nResponses)] for p in x]
         ll = self._logLikelihoodFunction(param)
         return -1 * numpy.sum(ll)
 
@@ -841,7 +1120,7 @@ class MCMC(object):
                       "complete": CompletePooling}[self._pooling](
                     self._parameterName, self._startingPoint, self._nGroups,
                     self._nResponsesPerGroup, self._logLikelihoodFunction,
-                    self._logger)
+                    self._priorDistribution, self._logger)
 
         sampler = Sampler(stepMethod, self._chain,
             self._sampleFile, self._llFile,
@@ -869,7 +1148,7 @@ def _getLogger(logFile, logName, loggingLevel):
     handler = logging.FileHandler(logFile)
     handler.setLevel(level)
 
-    logFormat = "%(asctime)s - %(name)s - %(levelname)s\n%(message)s"
+    logFormat = "%(asctime)s - %(name)s - %(levelname)s\n%(message)s\n"
     formatter = logging.Formatter(logFormat)
     handler.setFormatter(formatter)
 
@@ -878,156 +1157,10 @@ def _getLogger(logFile, logName, loggingLevel):
 
 
 def _printProgress(msg):
-    now = datetime.datetime.now().strftime(DATETIMEFMT)
+    now = _getStrfTime(datetime.datetime.now())
     print(now + "\t" + msg)
 
 
-def samplePosterior(nChains, nIter, nSamples,
-                    parameterName, nGroups, nResponsesPerGroup,
-                    pooling, logLikelihoodFunction,
-                    outputDirectory, clearOutputDirectory=True,
-                    saveLogLikelihood=True,
-                    startWithMLE=False, startingPointValueRange=None,
-                    nProcesses=1,
-                    displayProgress=True, loggingLevel="warning"):
-    """
-
-    :Arguments:
-
-        - nChains : int
-
-        - nIter : int
-            Number of iterations per chain
-
-        - nSamples : int
-            Number of retained samples per chain
-
-        - parameterName : tuple of str
-            e.g., ("alpha", "beta")
-
-        - nGroups : int
-
-        - nResponsesPerGroup : int or list of int
-
-        - logLikelihoodFunction : def
-            see doc string for HierarchicalBayes
-
-        - outputDirectory : str
-            Full path specifying where to save MCMC samples.
-
-        - clearOutputDirectory (optional) : bool, default = True
-            Whther to delete files in the outputDirectory before sampling.
-
-        - startingPointValueRange : dict
-
-            The parameter range to initialize a starting point. This is
-            ignored during MCMC sampling.
-
-            e.g., {"alpha": [0, 1], "beta": [2, 5]}
-
-        - saveLogLikelihood (optional) : bool, defalt = True
-            Whether to save loglikelihood when saving samples. Saved
-            loglikelihood can be used to compute waic or loo with loo package
-            in R.
-
-        - startWithMLE (optional) : bool, default = True
-            Whether to start a chain with maximum likelihood estimation.
-            This estimation pools groups and uses Nelder-Mead method.
-
-        - startingPointValueRange (optional) : dict of list, default = None
-            The parameter value range to initialize a starting point. This is
-            ignored during posterior sampling. If None, the range is set at
-            [-100, 100] for all the parameters.  e.g., {"alpha": [0, 1],
-            "beta": [2, 5]}
-
-        - nProcesses (optional) : int, default = 1
-            How many processes to launch. If 1 (default), multiprocessing is
-            not triggered. If zero, all the available cores are used.
-
-        - displayProgress (optional) : bool, default = True
-            Whether to display progress.
-
-        - loggingLevel (optional) : str, default = "info"
-            "error", "warning", "info", or "debug"
-
-    """
-
-    startTime = datetime.datetime.now()
-
-    if clearOutputDirectory and os.path.exists(outputDirectory):
-        shutil.rmtree(outputDirectory)
-
-    sampleDirectory = outputDirectory + "/sample/"
-    os.makedirs(sampleDirectory, exist_ok=True)
-
-    logFile = sampleDirectory + "log.txt"
-    logName = "mcmc"
-    logger = _getLogger(logFile, logName, loggingLevel)
-
-    msg = "MCMC sampling. "
-    msg += "nChains: %i, nIterPerChain: %i, nSamplesPerChain: %i."\
-        %(nChains, nIter, nSamples)
-    logger.info(msg)
-    if displayProgress:
-        print(msg)
-
-    if nProcesses <= 0:
-        nProcesses = min(nChains, multiprocessing.cpu_count())
-
-    if nProcesses == 1:
-        for chain in range(nChains):
-            _sample(chain, nIter, nSamples,
-                parameterName, nGroups, nResponsesPerGroup, pooling,
-                logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
-                startWithMLE, startingPointValueRange,
-                displayProgress, loggingLevel)
-
-    elif nProcesses > 1:
-        activeProcesses = []
-        for chain in range(nChains):
-            _displayProgress = displayProgress and (len(activeProcesses) == 0)
-            process = Process(target=_sample,
-                              args=(chain, nIter, nSamples,
-                                    parameterName, nGroups,
-                                    nResponsesPerGroup, pooling,
-                                    logLikelihoodFunction, sampleDirectory,
-                                    saveLogLikelihood, startWithMLE,
-                                    startingPointValueRange,
-                                    _displayProgress, loggingLevel))
-            process.start()
-            activeProcesses.append(process)
-
-            if len(activeProcesses) % nProcesses == 0:
-                for activeProcess in activeProcesses:
-                    activeProcess.join()
-                activeProcesses.clear()
-
-    else:
-        print("Invalid number of processes: ", n_processes)
-        print("Exiting.")
-        sys.exit()
-
-    endTime = datetime.datetime.now()
-    elapsed = endTime - startTime
-    msg = "Finished. The elapsed time in total is %s."\
-        % datetime.timedelta(seconds=int(elapsed.total_seconds()))
-
-    logger.info(msg)
-    if displayProgress:
-        print("")
-        _printProgress(msg)
-
-
-def _sample(chain, nIter, nSamples,
-            parameterName, nGroups, nResponsesPerGroup, pooling,
-            logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
-            startWithMLE, startingPointValueRange,
-            displayProgress, loggingLevel):
-
-    seed = chain
-    mcmc = MCMC(chain, seed, nIter, nSamples,
-                parameterName, nGroups, nResponsesPerGroup, pooling,
-                logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
-                startWithMLE, startingPointValueRange,
-                displayProgress, loggingLevel)
-    mcmc.run()
+def _getStrfTime(time):
+    datetimefmt = "%Y/%m/%d %H:%M:%S"
+    return time.strftime(datetimefmt)
