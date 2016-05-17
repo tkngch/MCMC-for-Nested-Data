@@ -19,7 +19,7 @@ integrate and 2) I wanted to cut off dependencies to the libraries with which
 I am not familiar.
 
 
-How to Run Examples
+How to run examples
 -------------------
 
 The root directory is here.
@@ -33,7 +33,7 @@ python -m example.regression
 ```
 
 
-Notes of Technical Issues
+Notes on technical issues
 -------------------------
 
 - Gaussian assumption in partial-pooling.
