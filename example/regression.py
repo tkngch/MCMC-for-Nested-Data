@@ -82,7 +82,7 @@ def main(pooling):
                                "sigma": [0.00, 100.]}
     prior = [scipy.stats.norm(loc=0, scale=10),
              scipy.stats.norm(loc=100, scale=10),
-             scipy.stats.gamma(100)]
+             scipy.stats.gamma(10)]
 
     # generate data and partial apply to the loglikelihood function
     nGroups = 10
@@ -98,7 +98,7 @@ def main(pooling):
                     priorDistribution=prior,
                     startWithMLE=True,
                     startingPointValueRange=startingPointValueRange,
-                    nProcesses=1)
+                    nProcesses=0)
 
     print(trueValueString)
     diagnoseSamples(outputDirectory)
