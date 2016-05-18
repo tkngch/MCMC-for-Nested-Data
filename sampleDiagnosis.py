@@ -446,7 +446,8 @@ class Summary(object):
     def _summarise(self):
         self._summary = "stats,parameter,mean,median,HDI lower,HDI upper\n"
 
-        for s, d in zip(("mean", "median"), (self._mean, self._median)):
+        for s, d in zip(("groupMean", "groupMedian"),
+                        (self._mean, self._median)):
             for name in sorted(d):
                 mean = numpy.mean(d[name])
                 median = numpy.median(d[name])
