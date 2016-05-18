@@ -1044,6 +1044,7 @@ class MCMC(object):
         logFile = logDirectory + "/mcmc.chain%.2i.log" % self._chain
         logName = "mcmc.chain%.2i" % self._chain
         self._logger = _getLogger(logFile, logName, loggingLevel)
+
         self._findStartingPoint(startWithMLE, startingPointValueRange)
 
     def _findStartingPoint(self, startWithMLE, startingPointValueRange):
@@ -1051,20 +1052,27 @@ class MCMC(object):
 
         if startingPointValueRange is None:
             startingPointValueRange = {}
-        for paramName in self._parameterName:
-            if paramName not in startingPointValueRange:
-                startingPointValueRange[paramName] = [-100, 100]
 
         ll = numpy.inf
         x = [0] * len(self._parameterName)
+        counter = 0
 
         while not numpy.isfinite(ll):
             for i, name in enumerate(self._parameterName):
-                x[i] = numpy.random.uniform(
-                    low=startingPointValueRange[name][0],
-                    high=startingPointValueRange[name][1])
+                if self._priorDistribution is not None:
+                    x[i] = self._priorDistribution[i].rvs()
+                elif name in startingPointValueRange:
+                    x[i] = numpy.random.uniform(
+                        low=startingPointValueRange[name][0],
+                        high=startingPointValueRange[name][1])
+                else:
+                    x[i] = numpy.random.norm()
 
             ll = self._mleObjectiveFunction(x)
+
+            counter += 1
+            if (counter > 10):
+                raise RuntimeError("Failed to find a valid starting state.")
 
         self._startingPoint = x
 

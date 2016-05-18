@@ -73,7 +73,7 @@ def main(pooling):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Example MCMC to sample from Normal distribution.")
+        description="Example MCMC to sample from Gaussian distribution.")
 
     parser.add_argument("pooling", nargs="?", default="partial",
         help="Pooling method (optional) : partial, complete or none. "
