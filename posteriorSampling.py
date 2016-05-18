@@ -114,8 +114,9 @@ def samplePosterior(nChains, nIter, nSamples,
     logName = "samplePosterior"
     logger = _getLogger(logFile, logName, loggingLevel)
 
-    msg = "MCMC sampling. "
-    msg += "nChains: %i, nIterPerChain: %i, nSamplesPerChain: %i."\
+    msg = "MCMC sampling.\n"
+    msg += "\tpooling: %s.\n" % pooling
+    msg += "\tnChains: %i, nIterPerChain: %i, nSamplesPerChain: %i."\
         %(nChains, nIter, nSamples)
     logger.info(msg)
     if displayProgress:
