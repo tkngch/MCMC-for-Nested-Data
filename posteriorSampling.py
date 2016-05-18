@@ -117,7 +117,7 @@ def samplePosterior(nChains, nIter, nSamples,
     msg = "MCMC sampling.\n"
     msg += "\tpooling: %s.\n" % pooling
     msg += "\tnChains: %i, nIterPerChain: %i, nSamplesPerChain: %i."\
-        %(nChains, nIter, nSamples)
+        % (nChains, nIter, nSamples)
     logger.info(msg)
     if displayProgress:
         print(msg)
@@ -127,7 +127,8 @@ def samplePosterior(nChains, nIter, nSamples,
 
     if nProcesses == 1:
         for chain in range(nChains):
-            _sample(chain, nIter, nSamples,
+            _sample(
+                chain, nIter, nSamples,
                 parameterName, nGroups, nResponsesPerGroup, pooling,
                 logLikelihoodFunction, sampleDirectory, saveLogLikelihood,
                 priorDistribution, startWithMLE, startingPointValueRange,
@@ -155,7 +156,7 @@ def samplePosterior(nChains, nIter, nSamples,
                 activeProcesses.clear()
 
     else:
-        print("Invalid number of processes: ", n_processes)
+        print("Invalid number of processes: ", nProcesses)
         print("Exiting.")
         sys.exit()
 
@@ -184,10 +185,6 @@ def _sample(chain, nIter, nSamples,
                 displayProgress, loggingLevel, logDirectory)
     mcmc.run()
 
-
-# ---------------------------- #
-# class declaration/definition #
-# ---------------------------- #
 
 class Parameter(object):
     def __init__(self, parameterName, index, value, prior, proposalSd, logger):
@@ -297,7 +294,7 @@ class Parameter(object):
         msg += "\tvalue: %.3f, logLikelihood %.3f, logPosterior: %.3f\n"\
             % (self._value, self._logLikelihood, self._logPosterior)
         msg += "\tproposal: %.3f, logll: %.3f, logPosterior: %.3f\n"\
-                % (self._proposal, proposalLogLikelihood, proposalLogPosterior)
+            % (self._proposal, proposalLogLikelihood, proposalLogPosterior)
         self._logger.debug(msg)
 
         diff = proposalLogPosterior - self._logPosterior
@@ -551,7 +548,8 @@ class StepMethod(object):
 
         self._nResponses = sum(nResponsesPerGroup)
 
-        self._groupSwitchPoint = numpy.hstack([0, numpy.cumsum(nResponsesPerGroup)])
+        self._groupSwitchPoint =\
+            numpy.hstack([0, numpy.cumsum(nResponsesPerGroup)])
         self._groupIndex = [0] * self._nResponses
         group = 0
         for i in range(self._nResponses):
@@ -568,10 +566,12 @@ class StepMethod(object):
                     raise Exception()
 
             self._groupIndex[i] = group
-        self._logger.debug("groupSwitchPoint: %s" % self._groupSwitchPoint.__str__())
+        self._logger.debug("groupSwitchPoint: %s" %
+                           self._groupSwitchPoint.__str__())
         self._logger.debug("groupIndex: %s" % self._groupIndex.__str__())
 
-        self._parameterForLlFunction = [[0] * self._nResponses] * len(self._parameterName)
+        nParameters = len(self._parameterName)
+        self._parameterForLlFunction = [[0] * self._nResponses] * nParameters
         self._logLikelihoodFunction = logLikelihoodFunction
 
         assert(len(parameterName) == len(startingPoint))
@@ -667,11 +667,15 @@ class CompletePooling(StepMethod):
         elif type(nResponsesPerGroup) == list:
             _nResponsesPerGroup = [sum(nResponsesPerGroup)]
 
-        if (priorDistribution is None) or (len(parameterName) != len(priorDistribution)):
+        if (
+                (priorDistribution is None) or
+                (len(parameterName) != len(priorDistribution))
+        ):
             raise ValueError("Invalid prior")
 
-        _priorDistribution = dict((key, dist)
-            for key, dist in zip(parameterName, priorDistribution))
+        _priorDistribution = \
+            dict((key, dist)
+                 for key, dist in zip(parameterName, priorDistribution))
 
         super().__init__(parameterName, startingPoint,
                          _nGroups, _nResponsesPerGroup, logLikelihoodFunction,
@@ -683,11 +687,15 @@ class NoPooling(StepMethod):
                  nGroups, nResponsesPerGroup, logLikelihoodFunction,
                  priorDistribution, logger):
 
-        if (priorDistribution is None) or (len(parameterName) != len(priorDistribution)):
+        if (
+                (priorDistribution is None) or
+                (len(parameterName) != len(priorDistribution))
+        ):
             raise ValueError("Invalid prior")
 
-        _priorDistribution = dict((key, dist)
-            for key, dist in zip(parameterName, priorDistribution))
+        _priorDistribution = \
+            dict((key, dist)
+                 for key, dist in zip(parameterName, priorDistribution))
 
         super().__init__(parameterName, startingPoint,
                          nGroups, nResponsesPerGroup, logLikelihoodFunction,
@@ -750,8 +758,7 @@ class PartialPooling(StepMethod):
         return self._parameter[name + "_hyper"].get_distribution()
 
     def _stepHyperParameter(self, name):
-        values = [self._parameter[name][i].value
-                    for i in range(self._nGroups)]
+        values = [self._parameter[name][i].value for i in range(self._nGroups)]
         self._parameter[name + "_hyper"].update(values)
 
         prior = self._getParameterPrior(name)
@@ -1006,8 +1013,8 @@ class MCMC(object):
 
         self._chain = chain
         if nIter < nSamples:
-            print("nIter (%i) cannot be less than nSamples (%i)."
-                % (nIter, nSamples))
+            print("nIter (%i) cannot be less than nSamples (%i)." %
+                  (nIter, nSamples))
             raise Exception()
         elif nIter // 2 > nSamples:
             self._burn = nIter // 2
@@ -1059,12 +1066,12 @@ class MCMC(object):
 
         while not numpy.isfinite(ll):
             for i, name in enumerate(self._parameterName):
-                if self._priorDistribution is not None:
-                    x[i] = self._priorDistribution[i].rvs()
-                elif name in startingPointValueRange:
+                if name in startingPointValueRange:
                     x[i] = numpy.random.uniform(
                         low=startingPointValueRange[name][0],
                         high=startingPointValueRange[name][1])
+                elif self._priorDistribution is not None:
+                    x[i] = self._priorDistribution[i].rvs()
                 else:
                     x[i] = numpy.random.norm()
 
@@ -1137,11 +1144,9 @@ class MCMC(object):
                     self._nResponsesPerGroup, self._logLikelihoodFunction,
                     self._priorDistribution, self._logger)
 
-        sampler = Sampler(stepMethod, self._chain,
-            self._sampleFile, self._llFile,
-            self._saveLogLikelihood,
-            self._displayProgress,
-            self._logger)
+        sampler = Sampler(
+            stepMethod, self._chain, self._sampleFile, self._llFile,
+            self._saveLogLikelihood, self._displayProgress, self._logger)
 
         tuneInterval = 100
         sampler.sample(self._nIter, self._burn, self._thin, tuneInterval)

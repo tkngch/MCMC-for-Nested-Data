@@ -221,9 +221,9 @@ class Diagnostic(object):
             if T is None:
                 T = self._n - 1
 
-            self._effectiveN[key] = (self._m * self._n) /\
-                                     (1 + 2 *
-                                      numpy.sum(self._rho[key][0:T + 1]))
+            self._effectiveN[key] = \
+                (self._m * self._n) /\
+                (1 + 2 * numpy.sum(self._rho[key][0:T + 1]))
 
     @property
     def assessment(self):
