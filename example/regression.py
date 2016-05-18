@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import argparse
 import functools
+
 import numpy
 import scipy.stats
+
 from posteriorSampling import samplePosterior
 from sampleDiagnosis import diagnoseSamples
+
 numpy.random.seed(12345)
 
 
@@ -63,13 +67,12 @@ def computeLogLikelihood(parameter, data):
     return ll
 
 
-def main():
+def main(pooling):
     # mcmc configuration
     nChains = 4
     nIter = 2000
     nSamples = 1000
 
-    pooling = "partial"
     outputDirectory = "./example/sample/regression/"
 
     # paramter specification
@@ -102,4 +105,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Example MCMC for a linear regression.")
+
+    parser.add_argument("pooling", nargs="?", default="partial",
+        help="Pooling method (optional) : partial, complete or none. "
+        + "Default is partial.")
+
+    args = parser.parse_args()
+
+    main(args.pooling)

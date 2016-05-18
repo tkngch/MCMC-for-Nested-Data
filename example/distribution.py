@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import argparse
 import functools
+
 import numpy
 import scipy.stats
+
 from posteriorSampling import samplePosterior
 from sampleDiagnosis import diagnoseSamples
+
 numpy.random.seed(12345)
 
 
@@ -43,7 +47,7 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
     return func, prior, trueValueString
 
 
-def main():
+def main(pooling):
     nChains = 2
     nIter = 1000
     nSamples = 100
@@ -54,9 +58,6 @@ def main():
 
     nGroups = 10
     nResponsesPerGroup = 10
-    # pooling = "partial"
-    pooling = "none"
-    # pooling = "complete"
 
     objectiveFunction, prior, trueValueString =\
         getFunction(parameterName, nGroups, nResponsesPerGroup)
@@ -71,4 +72,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Example MCMC to sample from Normal distribution.")
+
+    parser.add_argument("pooling", nargs="?", default="partial",
+        help="Pooling method (optional) : partial, complete or none. "
+        + "Default is partial.")
+
+    args = parser.parse_args()
+
+    main(args.pooling)
