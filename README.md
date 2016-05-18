@@ -28,9 +28,14 @@ The root directory is here.
 python -m example.distribution
 ```
 
+
 ```
 python -m example.regression
 ```
+
+This second, regression example illustrates advantage of partial pooling.
+Complete and no pooling result in biased estimate.
+
 
 
 Notes on technical issues
