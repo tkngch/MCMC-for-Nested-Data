@@ -287,19 +287,16 @@ class Diagnostic(object):
             rhats[name].append(row[1])
             converged[name].append(row[2])
 
-        rhatsHDI = dict((name, _computeHpdInterval(rhats[name], 0.95))
-                        for name in parameterNames)
-
         self._summary = numpy.array([(name,
+                                      min(rhats[name]),
                                       numpy.median(rhats[name]),
-                                      rhatsHDI[name][0],
-                                      rhatsHDI[name][1],
+                                      max(rhats[name]),
                                       numpy.mean(converged[name]))
                                      for name in parameterNames],
                                     dtype=[("parameter", "S40"),
+                                           ("rhat min", float),
                                            ("rhat median", float),
-                                           ("rhat lower", float),
-                                           ("rhat upper", float),
+                                           ("rhat max", float),
                                            ("proportion converged", float)])
 
     def print(self, csvfile, individualSummary, hyperOnly):
