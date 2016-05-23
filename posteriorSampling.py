@@ -34,6 +34,8 @@ def samplePosterior(nChains, nIter, nSamples,
                     startWithMLE=False, startingPointValueRange=None,
                     nProcesses=1, displayProgress=True, loggingLevel="info"):
     """
+    Samples from posterior distribution. Samples are saved under the
+    outputDirectory, and this function does not return anything meaningful.
 
     :Arguments:
 
@@ -57,7 +59,47 @@ def samplePosterior(nChains, nIter, nSamples,
             "none".
 
         - logLikelihoodFunction : def
-            see doc string for HierarchicalBayes
+            A function that accepts a nested list of parameter values and
+            returns a list of log likelihood.  No other arguments are passed to
+            this function. If your log likelihood function requires any other
+            argument, consider partial application (functools.partial).
+
+                The list of parameter values is organized as:
+                    [[the first parameter for the first group,
+                      the first parameter for the first group,
+                      ...
+                      the first parameter for the first group,
+                      the first parameter for the second group,
+                      ...
+                      the first parameter for the last group],
+                     [the second parameter for the first group,
+                      the second parameter for the first group,
+                      ...
+                      the second parameter for the first group,
+                      the second parameter for the second group,
+                      ...
+                      the second parameter for the last group],
+                     ...
+                    ]
+
+            The parameter values for each group are repeated according to
+            nResponsesPerGroup.
+
+            Also, the order of parameters is as in the parameterName argument
+            above (e.g., if parameterName = ("alpha", "beta"), the first
+            parameter is alpha, the second is beta).
+
+                The output value should be:
+                    [ll for the first group's first response,
+                     ll for the first group's second response,
+                     ...,
+                     ll for the first group's last response,
+                     ll for the second group's first response,
+                     ll for the second group's second response,
+                     ...,
+                     ll for the second group's last response,
+                     ll for the third group's first response,
+                     ...]
 
         - outputDirectory : str
             Full path specifying where to save MCMC samples.
@@ -96,6 +138,9 @@ def samplePosterior(nChains, nIter, nSamples,
 
         - loggingLevel (optional) : str, default = "info"
             "error", "warning", "info", or "debug"
+
+    :Output:
+        None
 
     """
 
@@ -452,7 +497,7 @@ class HyperParameter(object):
     def _sampleInvChisq(self, v, s2):
         return scipy.stats.invgamma(v / 2., scale=(v / 2.) * s2).rvs()
 
-    def get_distribution(self):
+    def getDistribution(self):
         return scipy.stats.norm(loc=self._value["mu"],
                                 scale=numpy.sqrt(self._value["sigma2"]))
 
@@ -493,49 +538,7 @@ class StepMethod(object):
             - nResponsesPerGroup : list of int
 
             - logLikelihoodFunction : def
-
-                A function that accepts a nested list of parameter values and
-                returns a list of log likelihood.  No other arguments are
-                passed to this function. If your log likelihood function
-                requires any other argument, consider partial application
-                (functools.partial).
-
-                The list of parameter values is organized as:
-                    [[the first parameter for the first group,
-                      the first parameter for the first group,
-                      ...
-                      the first parameter for the first group,
-                      the first parameter for the second group,
-                      ...
-                      the first parameter for the last group],
-                     [the second parameter for the first group,
-                      the second parameter for the first group,
-                      ...
-                      the second parameter for the first group,
-                      the second parameter for the second group,
-                      ...
-                      the second parameter for the last group],
-                     ...
-                    ]
-
-                The parameter values for each group are repeated according to
-                nResponsesPerGroup.
-
-                Also, the order of parameters is as in the parameterName
-                argument above (e.g., if parameterName = ("alpha", "beta"), the
-                first parameter is alpha, the second is beta).
-
-                The output value should be:
-                    [ll for the first group's first response,
-                     ll for the first group's second response,
-                     ...,
-                     ll for the first group's last response,
-                     ll for the second group's first response,
-                     ll for the second group's second response,
-                     ...,
-                     ll for the second group's last response,
-                     ll for the third group's first response,
-                     ...]
+                see doc string for samplePosterior
 
             - priorDistribution (optional) : tuple of scipy.stats distributions
 
@@ -755,7 +758,7 @@ class PartialPooling(StepMethod):
                         self._parameter[name][i].samplePriorAndSetValue()
 
     def _getParameterPrior(self, name):
-        return self._parameter[name + "_hyper"].get_distribution()
+        return self._parameter[name + "_hyper"].getDistribution()
 
     def _stepHyperParameter(self, name):
         values = [self._parameter[name][i].value for i in range(self._nGroups)]
@@ -973,7 +976,7 @@ class MCMC(object):
                 "none".
 
             - logLikelihoodFunction : def
-                see doc string for HierarchicalBayes
+                see doc string for samplePosterior
 
             - sampleDirectory : str
                 Full path specifying where to save MCMC samples.
