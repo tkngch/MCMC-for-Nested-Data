@@ -12,6 +12,36 @@ def diagnoseSamples(outputDirectory,
                     assessConvergence=True,
                     printSummary=True,
                     plotSamples=True):
+    """
+    Diagnose samples.
+
+    :Arguments:
+
+        - outputDirectory : str
+            Full path specifying where MCMC samples are saved. This path should
+            be the same as what you give samplePosterior in posteriorSampling
+            module.
+
+        - assessConvergence (optional) : bool, default = True
+            Whether to compute rhat, effective number of samples, etc to assess
+            convergence of MCMC chains.
+
+        - printSummary (optional) : bool, default = True
+            Whether to calculate summary statistics of samples. Summary
+            statistics are computed with parameter values, ignoring
+            hyper-parameters.
+
+            So groupMean is the mean of parameters for each group, which may or
+            may not be the same as the group mean estimated with
+            hyper-parameter. So with partial-pooling, this summary may not be
+            useful. Though with no-pooling, this summary statistics are
+            considered to be group estimates.
+
+        - plotSamples (optional) : bool, default = True
+            Whether to make trace plots and bivariate plots. Useful in
+            assessing convergence.
+
+    """
 
     sampleDirectory = outputDirectory + "/sample/"
     diagnosticDirectory = outputDirectory + "/diagnostic/"
