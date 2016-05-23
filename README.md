@@ -3,7 +3,8 @@ MCMC for Nested Data
 
 This module is written so that MCMC can be applied to nested data, using a
 custom objective function. The module allows complete-, partial- and no-pooling
-of nested data. The partial-pooling method is often called hierarchical Bayes.
+of nested data. The partial-pooling method is often called hierarchical Bayes
+or multilevel modelling.
 
 There exist several libraries to run MCMC (e.g., PyMC and Stan), but I could
 not find one which suits my needs. While hierarchical Bayes is doable with the
@@ -22,7 +23,7 @@ I am not familiar.
 How to run examples
 -------------------
 
-The root directory is here.
+The root directory is here (where this README.md is).
 
 ```
 python -m example.distribution
@@ -34,7 +35,25 @@ python -m example.regression
 ```
 
 This second, regression example illustrates advantage of partial pooling.
-Complete and no pooling result in biased estimate.
+Complete and no pooling result in variable estimate.
+
+
+How to use this module
+----------------------
+
+To sample posterior, you just need to import samplePosterior function in your
+script.
+```
+from posteriorSampling import samplePosterior
+```
+Then call this function. Please see doc string for samplePosterior for more
+details on how to call this function.
+
+To diagnose samples, use diagnoseSamples imported from sampleDiagnosis.
+```
+from sampleDiagnosis import diagnoseSamples
+```
+Again, please see doc string for sampleDiagnosis for more details.
 
 
 
@@ -61,7 +80,7 @@ uniform.  This is because prior tends to have only minor impacts on estimate,
 especially with the reasonable number of groups. If you want to put constraint
 to the parameter values (e.g., when parameter values are desired to be
 positive), complete- or no-pooling should be considered. Alternatively,
-parameter values should be transformed within a objective function. If positive
+parameter values can be transformed within a objective function. If positive
 values are desired, for example, you can exponentiate values. If integer is
 desired, you can round.
 
