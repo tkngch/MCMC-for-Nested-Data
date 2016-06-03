@@ -108,9 +108,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Example MCMC for a linear regression.")
 
-    parser.add_argument("pooling", nargs="?", default="partial",
-        help="Pooling method (optional) : partial, complete or none. "
-        + "Default is partial.")
+    parser.add_argument(
+        "pooling", nargs="?", default="partial",
+        help="Pooling method (optional) : partial, complete or none. " +
+        "Default is partial."
+    )
 
     args = parser.parse_args()
 

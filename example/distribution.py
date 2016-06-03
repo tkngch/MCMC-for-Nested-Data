@@ -33,8 +33,8 @@ def getFunction(parameterName, nGroups, nResponsesPerGroup):
         tmp = [scipy.stats.norm(loc=loc, scale=sd) for loc in mu]
         distributions.append(tmp)
 
-        trueValueString += "\t%s: {mean: %.2f, var: %.2f}\n"\
-              % (name, numpy.mean(mu), numpy.var(mu))
+        trueValueString += "\t%s: {mean: %.2f, var: %.2f}\n" %\
+            (name, numpy.mean(mu), numpy.var(mu))
 
     groupIndex = [i for i in range(nGroups) for j in range(nResponsesPerGroup)]
 
@@ -75,9 +75,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Example MCMC to sample from Gaussian distribution.")
 
-    parser.add_argument("pooling", nargs="?", default="partial",
-        help="Pooling method (optional) : partial, complete or none. "
-        + "Default is partial.")
+    parser.add_argument(
+        "pooling", nargs="?", default="partial",
+        help="Pooling method (optional) : partial, complete or none. " +
+        "Default is partial."
+    )
 
     args = parser.parse_args()
 
