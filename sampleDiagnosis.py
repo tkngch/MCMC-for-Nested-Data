@@ -734,7 +734,7 @@ def _stdout_csv(content):
     print("\t" + content.replace(",", ", ").replace("\n", "\n\t"))
 
 
-def computeHpdInterval(samples, hdi_p):
+def computeHpdInterval(samples, hdi_p=95):
     prob = hdi_p / 100.
     sorted_samples = numpy.array(sorted(samples))
     n_samples = len(samples)
