@@ -1081,7 +1081,7 @@ class MCMC(object):
             ll = self._mleObjectiveFunction(x)
 
             counter += 1
-            if (counter > 100):
+            if (counter > 1000):
                 raise RuntimeError("Failed to find a valid starting state.")
 
         self._startingPoint = x
