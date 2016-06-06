@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 def diagnoseSamples(outputDirectory,
                     assessConvergence=True,
                     printSummary=True,
-                    plotSamples=True):
+                    nFigures=10):
     """
     Diagnose samples.
 
@@ -37,8 +37,8 @@ def diagnoseSamples(outputDirectory,
             useful. Though with no-pooling, this summary statistics are
             considered to be group estimates.
 
-        - plotSamples (optional) : bool, default = True
-            Whether to make trace plots and bivariate plots. Useful in
+        - nFigures (optional) : int, default = 10
+            How many trace plots and bivariate plots to make. Useful in
             assessing convergence.
 
     """
@@ -75,13 +75,12 @@ def diagnoseSamples(outputDirectory,
     bivariateDirectory = outputDirectory + "/figure/bivariate/"
     llFile = outputDirectory + "/figure/logLikelihood.png"
 
-    if plotSamples:
+    if nFigures > 0:
         for directory in (traceplotDirectory, bivariateDirectory):
             os.makedirs(directory, exist_ok=True)
 
         fig = Figure(sampleDirectory)
         fig.loglikelihood(llFile)
-        nFigures = 10
         fig.traceplots(traceplotDirectory, nFigures)
         fig.bivariates(bivariateDirectory, nFigures)
 
