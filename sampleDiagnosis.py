@@ -424,7 +424,7 @@ class Diagnostic(object):
         for key in self._samples:
             samples = self._samples[key].flatten()
             self._median[key] = numpy.median(samples)
-            self._hdi[key] = _computeHpdInterval(samples, self._hdiP)
+            self._hdi[key] = computeHpdInterval(samples, self._hdiP)
 
 
 class Summary(object):
@@ -477,7 +477,7 @@ class Summary(object):
             for name in sorted(d):
                 mean = numpy.mean(d[name])
                 median = numpy.median(d[name])
-                hdi = _computeHpdInterval(d[name], 95.)
+                hdi = computeHpdInterval(d[name], 95.)
 
                 self._summary += "%s,%s,%.4f,%.4f,%.4f,%.4f\n"\
                     % (s, name, mean, median, hdi[0], hdi[1])
@@ -763,7 +763,7 @@ def _stdout_csv(content):
     print("\t" + content.replace(",", ", ").replace("\n", "\n\t"))
 
 
-def _computeHpdInterval(samples, hdi_p):
+def computeHpdInterval(samples, hdi_p):
     prob = hdi_p / 100.
     sorted_samples = numpy.array(sorted(samples))
     n_samples = len(samples)
