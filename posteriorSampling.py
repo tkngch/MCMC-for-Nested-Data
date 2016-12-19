@@ -1082,7 +1082,10 @@ class MCMC(object):
 
             counter += 1
             if (counter > 1000):
-                raise RuntimeError("Failed to find a valid starting state.")
+                raise RuntimeError(
+                    "Failed to find a valid starting state: ll =",
+                    ll
+                )
 
         self._startingPoint = x
 

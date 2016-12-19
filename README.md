@@ -8,11 +8,11 @@ or multilevel modelling.
 
 There exist several libraries to run MCMC (e.g., PyMC and Stan), but I could
 not find one which suits my needs. While hierarchical Bayes is doable with the
-existing libraries, but those libraries often do not work with a custom
-likelihood function. Even when they do, their sampling procedures are not
-optimized and require a large number of calls to the objective function or the
-large number of iterations for MCMC.  This is my attempt for a general purpose
-MCMC module for nested data.
+existing libraries, those libraries often do not work with a custom likelihood
+function. Even when they do, their sampling procedures are not optimized and
+require a large number of calls to the objective function or the large number
+of iterations for MCMC (as of mid-2015).  This is my attempt for a general
+purpose MCMC module for nested data.
 
 Parts of this module is influenced by PyMC, but I did not fork PyMC, because 1)
 the procedure is quite a bit different and I could not think of a way to
@@ -23,7 +23,7 @@ I am not familiar.
 How to run examples
 -------------------
 
-The root directory is here (where this README.md is).
+The root directory is here (where this README.md is located).
 
 ```
 python -m example.distribution
@@ -41,7 +41,7 @@ Complete and no pooling result in variable estimate.
 How to use this module
 ----------------------
 
-To sample posterior, you just need to import samplePosterior function in your
+To sample posterior, you need to import samplePosterior function in your
 script.
 ```
 from posteriorSampling import samplePosterior
